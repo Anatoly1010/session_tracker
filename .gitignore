@@ -1,0 +1,10 @@
+# local SQLite index (rebuilt from ~/.claude on startup)
+sessions.db
+*.db
+
+# python
+__pycache__/
+*.pyc
+
+# temp / scratch
+_shots/
