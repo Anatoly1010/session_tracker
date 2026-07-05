@@ -22,6 +22,9 @@ re-indexes new or changed sessions on demand.
 - **✎ Rename** sets a custom label that overrides the (sometimes misleading)
   auto scope. Labels are stored separately and survive rescans; blank clears
   it. The original scope stays visible underneath.
+- **★ Star** — the leftmost column toggles a favorite. Starred sessions also
+  collect under the **Favorites** tab (same rows, resume, and transcript view).
+  Stars live in a separate table, so a rescan never clears them.
 - **Resume** — the details panel shows `cd <folder> && claude --resume <id>`
   with a ⧉ copy button; paste it in a terminal to continue that session.
 - **View full conversation** — opens a modal reader that reconstructs the whole
@@ -59,7 +62,7 @@ A third tab with a few interactive charts computed from the session index
 - **Activity** — a weekday × hour heatmap of when sessions start (local time).
 
 Hover any mark for a tooltip. Charts re-fit on window resize. Tabs are
-deep-linkable via the URL hash (`#sessions`, `#memory`, `#insights`).
+deep-linkable via the URL hash (`#sessions`, `#favorites`, `#memory`, `#insights`).
 
 ## Theme
 

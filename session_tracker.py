@@ -150,6 +150,11 @@ CREATE TABLE IF NOT EXISTS labels (
     session_id   TEXT PRIMARY KEY,
     label        TEXT
 );
+-- starred sessions, likewise separate so rescans never clear them.
+CREATE TABLE IF NOT EXISTS favorites (
+    session_id   TEXT PRIMARY KEY,
+    created      REAL
+);
 """
 
 
@@ -232,8 +237,10 @@ def resume_command(folder, session_id):
 
 
 def query_sessions(conn, q="", folder=""):
-    sql = ("SELECT s.*, l.label AS label "
-           "FROM sessions s LEFT JOIN labels l USING (session_id) WHERE 1=1")
+    sql = ("SELECT s.*, l.label AS label, "
+           "(fv.session_id IS NOT NULL) AS favorite "
+           "FROM sessions s LEFT JOIN labels l USING (session_id) "
+           "LEFT JOIN favorites fv USING (session_id) WHERE 1=1")
     args = []
     if q:
         sql += (" AND (s.scope LIKE ? OR s.session_id LIKE ? OR s.folder LIKE ? "
@@ -263,6 +270,17 @@ def set_label(conn, session_id, label):
         conn.execute("DELETE FROM labels WHERE session_id = ?", (session_id,))
     conn.commit()
     return {"session_id": session_id, "label": label}
+
+
+def set_favorite(conn, session_id, fav):
+    """Star or unstar a session; kept apart from sessions so rescans persist it."""
+    if fav:
+        conn.execute("INSERT OR IGNORE INTO favorites (session_id, created) "
+                     "VALUES (?, ?)", (session_id, time.time()))
+    else:
+        conn.execute("DELETE FROM favorites WHERE session_id = ?", (session_id,))
+    conn.commit()
+    return {"session_id": session_id, "favorite": bool(fav)}
 
 
 def folder_list(conn):
@@ -594,6 +612,12 @@ INDEX_HTML = r"""<!doctype html>
   .copy { border: none; background: none; padding: 0 5px; opacity: .5; cursor: pointer;
           color: inherit; }
   .copy:hover { opacity: 1; }
+  .star-th { width: 30px; padding-left: 14px; }
+  .starcell { padding-left: 12px; padding-right: 0; width: 30px; }
+  .star { border: none; background: none; padding: 0 2px; cursor: pointer; line-height: 1;
+          font-size: 15px; color: var(--muted); transition: color .12s, transform .08s; }
+  .star:hover { color: var(--accent); transform: scale(1.15); }
+  .star.on { color: var(--accent); }
   .empty { padding: 48px; text-align: center; color: var(--muted); }
 
   .detail td { background: color-mix(in srgb, var(--bg) 95%, var(--fg)); padding: 0; }
@@ -729,6 +753,7 @@ INDEX_HTML = r"""<!doctype html>
     <h1>Claude Session Tracker</h1>
     <div class="seg">
       <button id="tabSessions" class="on" onclick="setView('sessions')">Sessions</button>
+      <button id="tabFavorites" onclick="setView('favorites')">★ Favorites</button>
       <button id="tabMemory" onclick="setView('memory')">Memory</button>
       <button id="tabInsights" onclick="setView('insights')">Insights</button>
     </div>
@@ -744,12 +769,16 @@ INDEX_HTML = r"""<!doctype html>
     <input id="memQ" type="search" placeholder="Filter memories…">
     <span class="meta" id="memMeta"></span>
   </div>
+  <div class="controls" id="favCtrls" hidden>
+    <span class="meta" id="favMeta"></span>
+  </div>
 </header>
 
 <main>
   <section id="sessionsView">
     <table id="tbl">
       <thead><tr>
+        <th class="star-th"></th>
         <th data-k="last_ts">Last activity</th>
         <th data-k="scope">Scope</th>
         <th data-k="folder">Folder</th>
@@ -759,6 +788,21 @@ INDEX_HTML = r"""<!doctype html>
       <tbody id="rows"></tbody>
     </table>
     <div class="empty" id="empty" hidden>No sessions match.</div>
+  </section>
+
+  <section id="favoritesView" hidden>
+    <table id="favTbl">
+      <thead><tr>
+        <th class="star-th"></th>
+        <th data-k="last_ts">Last activity</th>
+        <th data-k="scope">Scope</th>
+        <th data-k="folder">Folder</th>
+        <th data-k="n_user" class="num">Msgs</th>
+        <th data-k="session_id">Session</th>
+      </tr></thead>
+      <tbody id="favRows"></tbody>
+    </table>
+    <div class="empty" id="favEmpty" hidden>No favorites yet — star a session with the ☆ on its row.</div>
   </section>
 
   <section id="memoryView" hidden>
@@ -824,16 +868,18 @@ async function copyText(s){ try{ await navigator.clipboard.writeText(s);
 /* ---------- view switch ---------- */
 function setView(v){
   const map={ sessions:[tabSessions,sessionsView,sessCtrls],
+              favorites:[tabFavorites,favoritesView,favCtrls],
               memory:[tabMemory,memoryView,memCtrls],
               insights:[tabInsights,insightsView,null] };
   for(const k in map){ const [tab,view,ctrls]=map[k]; const on=k===v;
     tab.classList.toggle("on",on); view.hidden=!on; if(ctrls) ctrls.hidden=!on; }
+  if(v==="favorites") renderFav();
   if(v==="memory" && !memLoaded) loadMemProjects();
   if(v==="insights") loadInsights();
   if(location.hash.slice(1)!==v) history.replaceState(null,"","#"+v);
 }
 window.addEventListener("hashchange",()=>{ const v=location.hash.slice(1);
-  if(["sessions","memory","insights"].includes(v)) setView(v); });
+  if(["sessions","favorites","memory","insights"].includes(v)) setView(v); });
 
 /* ================= SESSIONS ================= */
 let DATA=[], sortK="last_ts", sortAsc=false;
@@ -843,7 +889,7 @@ async function load(){
   const p=new URLSearchParams({q:q.value, folder:folder.value});
   const j=await (await fetch("/api/sessions?"+p)).json();
   DATA=j.sessions; meta.textContent=j.sessions.length+" sessions";
-  fillFolders(j.folders); render();
+  fillFolders(j.folders); renderAll();
 }
 function fillFolders(folders){
   if(folder.dataset.filled) return;
@@ -864,7 +910,7 @@ function scopeCell(s){
 }
 function detailRow(s){
   const cmd=s.resume_cmd||`cd ${s.folder} && claude --resume ${s.session_id}`;
-  return `<tr class="detail"><td colspan="5"><div class="detail-inner">
+  return `<tr class="detail"><td colspan="6"><div class="detail-inner">
     <dt>Transcript</dt><dd><button class="linkbtn"
       onclick="event.stopPropagation();openTranscript('${s.session_id}')">View full conversation →</button></dd>
     <dt>Resume</dt><dd><span class="cmd"><code>${esc(cmd)}</code>
@@ -881,23 +927,43 @@ function detailRow(s){
     ${s.last_prompt&&s.last_prompt!==s.first_user?`<dt>Last prompt</dt><dd class="prompt">${esc(s.last_prompt)}</dd>`:""}
   </div></td></tr>`;
 }
-function render(){
-  const d=[...DATA].sort((a,b)=>{ let x=a[sortK]||"",y=b[sortK]||"";
+function rowHtml(s){ const o=openRows.has(s.session_id);
+  return `<tr class="srow${o?" open":""}" data-id="${s.session_id}">
+    <td class="starcell"><button class="star${s.favorite?" on":""}"
+        title="${s.favorite?"Remove from favorites":"Add to favorites"}"
+        onclick="event.stopPropagation();toggleFav('${s.session_id}')">${s.favorite?"★":"☆"}</button></td>
+    <td class="when">${rel(s.last_ts)}<div class="abs">${fmt(s.last_ts)}</div></td>
+    <td class="scope">${scopeCell(s)}</td>
+    <td><span class="chip" title="${esc(s.folder)}">${esc(base(s.folder))}</span></td>
+    <td class="num">${s.n_user}</td>
+    <td class="idchip">${s.session_id.slice(0,8)}…
+      <button class="copy" title="Copy full session id"
+        onclick="event.stopPropagation();copyText('${s.session_id}')">⧉</button></td>
+  </tr>${o?detailRow(s):""}`;
+}
+function renderRows(list, tbody, emptyEl){
+  const d=[...list].sort((a,b)=>{ let x=a[sortK]||"",y=b[sortK]||"";
     if(typeof x!=="number"){x=(""+x).toLowerCase();y=(""+y).toLowerCase();}
     return (x<y?-1:x>y?1:0)*(sortAsc?1:-1); });
-  empty.hidden=d.length>0;
-  rows.innerHTML=d.map(s=>{ const o=openRows.has(s.session_id);
-    return `<tr class="srow${o?" open":""}" data-id="${s.session_id}">
-      <td class="when">${rel(s.last_ts)}<div class="abs">${fmt(s.last_ts)}</div></td>
-      <td class="scope">${scopeCell(s)}</td>
-      <td><span class="chip" title="${esc(s.folder)}">${esc(base(s.folder))}</span></td>
-      <td class="num">${s.n_user}</td>
-      <td class="idchip">${s.session_id.slice(0,8)}…
-        <button class="copy" title="Copy full session id"
-          onclick="event.stopPropagation();copyText('${s.session_id}')">⧉</button></td>
-    </tr>${o?detailRow(s):""}`; }).join("");
-  rows.querySelectorAll(".srow").forEach(tr=>{ tr.onclick=()=>{
-    const id=tr.dataset.id; openRows.has(id)?openRows.delete(id):openRows.add(id); render(); }; });
+  emptyEl.hidden=d.length>0;
+  tbody.innerHTML=d.map(rowHtml).join("");
+  tbody.querySelectorAll(".srow").forEach(tr=>{ tr.onclick=()=>{
+    const id=tr.dataset.id; openRows.has(id)?openRows.delete(id):openRows.add(id); renderAll(); }; });
+}
+function render(){ renderRows(DATA, rows, empty); }
+function renderFav(){ const f=DATA.filter(s=>s.favorite);
+  favMeta.textContent = f.length ? `${f.length} favorite${f.length>1?"s":""}` : "";
+  renderRows(f, favRows, favEmpty); }
+function renderAll(){ render(); renderFav(); }
+async function toggleFav(id){
+  const s=DATA.find(x=>x.session_id===id); if(!s) return;
+  const nv=s.favorite?0:1; s.favorite=nv;
+  renderAll();
+  try{
+    await fetch("/api/favorite",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({session_id:id,favorite:nv})});
+    toast(nv?"Added to favorites":"Removed from favorites");
+  }catch(e){ s.favorite=nv?0:1; renderAll(); toast("Failed to save favorite",1); }
 }
 async function rename(ev,id){ ev.stopPropagation();
   const s=DATA.find(x=>x.session_id===id);
@@ -905,7 +971,7 @@ async function rename(ev,id){ ev.stopPropagation();
   if(val===null) return;
   await fetch("/api/label",{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({session_id:id,label:val})});
-  s.label=val.trim(); render(); toast(s.label?"Renamed":"Label cleared");
+  s.label=val.trim(); renderAll(); toast(s.label?"Renamed":"Label cleared");
 }
 q.addEventListener("input",()=>{clearTimeout(window._t);window._t=setTimeout(load,180);});
 folder.addEventListener("change",load);
@@ -914,7 +980,7 @@ refresh.addEventListener("click",async()=>{ refresh.disabled=true; refresh.textC
   refresh.textContent="↻ Rescan"; refresh.disabled=false;
   toast(`Indexed ${st.total} · +${st.added} ~${st.updated} -${st.removed}`); load(); });
 document.querySelectorAll("th[data-k]").forEach(th=>{ th.onclick=()=>{ const k=th.dataset.k;
-  if(sortK===k) sortAsc=!sortAsc; else {sortK=k; sortAsc=false;} render(); }; });
+  if(sortK===k) sortAsc=!sortAsc; else {sortK=k; sortAsc=false;} renderAll(); }; });
 
 /* ================= MEMORY ================= */
 let memLoaded=false, MEMPROJ=[], MEMFILES=[], memViewOpen=new Set();
@@ -1150,7 +1216,7 @@ window.addEventListener("keydown",e=>{ if(e.key==="Escape" && !modal.hidden) clo
 
 (function(){ const h=location.hash.slice(1);
   if(h.startsWith("t/")) openTranscript(h.slice(2));
-  else if(["memory","insights"].includes(h)) setView(h); })();
+  else if(["favorites","memory","insights"].includes(h)) setView(h); })();
 load();
 </script>
 </body>
@@ -1266,6 +1332,18 @@ def make_handler(db_path, projects_dir):
                     conn = connect(db_path)
                     try:
                         res = set_label(conn, sid, body.get("label", ""))
+                    finally:
+                        conn.close()
+                return self._send(200, res)
+            if u.path == "/api/favorite":
+                body = self._body()
+                sid = body.get("session_id")
+                if not sid:
+                    return self._send(400, {"error": "session_id required"})
+                with write_lock:
+                    conn = connect(db_path)
+                    try:
+                        res = set_favorite(conn, sid, bool(body.get("favorite")))
                     finally:
                         conn.close()
                 return self._send(200, res)
