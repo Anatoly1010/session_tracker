@@ -24,6 +24,11 @@ re-indexes new or changed sessions on demand.
   it. The original scope stays visible underneath.
 - **Resume** — the details panel shows `cd <folder> && claude --resume <id>`
   with a ⧉ copy button; paste it in a terminal to continue that session.
+- **View full conversation** — opens a modal reader that reconstructs the whole
+  transcript: your prompts and Claude's replies as bubbles, tool calls collapsed
+  into expandable `⚙` blocks (each showing its input and result), and Claude's
+  internal thinking hidden behind a **thinking** toggle. Close with ✕, the
+  backdrop, or Esc. Deep-linkable via `#t/<session-id>`.
 
 ## Memory tab
 

@@ -272,6 +272,97 @@ def folder_list(conn):
 
 
 # --------------------------------------------------------------------------- #
+# Full transcript reconstruction
+# --------------------------------------------------------------------------- #
+_TXT_CAP = 12000     # per text/thinking block
+_TOOL_CAP = 8000     # per tool input / result
+_MAX_EVENTS = 6000   # safety cap on a single transcript
+
+
+def _clip(s, n):
+    s = s or ""
+    return s if len(s) <= n else s[:n] + f"\n… [+{len(s) - n} chars]"
+
+
+def _result_text(block):
+    c = block.get("content")
+    if isinstance(c, list):
+        c = "\n".join(b.get("text", "") for b in c
+                      if isinstance(b, dict) and b.get("type") == "text")
+    if not isinstance(c, str):
+        c = json.dumps(c, ensure_ascii=False)
+    return {"text": _clip(c, _TOOL_CAP), "error": bool(block.get("is_error"))}
+
+
+def load_transcript(path):
+    """Reconstruct an ordered conversation from a .jsonl transcript."""
+    records = []
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    # first pass: map tool_use_id -> its result (results arrive as user records)
+    results = {}
+    for d in records:
+        if d.get("type") == "user":
+            c = (d.get("message") or {}).get("content")
+            if isinstance(c, list):
+                for b in c:
+                    if isinstance(b, dict) and b.get("type") == "tool_result":
+                        results[b.get("tool_use_id")] = _result_text(b)
+
+    events = []
+    truncated = False
+    for d in records:
+        if len(events) >= _MAX_EVENTS:
+            truncated = True
+            break
+        t = d.get("type")
+        ts = d.get("timestamp", "")
+        if t == "assistant":
+            c = (d.get("message") or {}).get("content")
+            blocks = []
+            if isinstance(c, str) and c.strip():
+                blocks.append({"t": "text", "text": _clip(c, _TXT_CAP)})
+            elif isinstance(c, list):
+                for b in c:
+                    bt = b.get("type")
+                    if bt == "text" and b.get("text", "").strip():
+                        blocks.append({"t": "text", "text": _clip(b["text"], _TXT_CAP)})
+                    elif bt == "thinking" and (b.get("thinking") or b.get("text")):
+                        blocks.append({"t": "thinking",
+                                       "text": _clip(b.get("thinking") or b.get("text"), _TXT_CAP)})
+                    elif bt == "tool_use":
+                        blocks.append({
+                            "t": "tool", "name": b.get("name", "tool"),
+                            "input": _clip(json.dumps(b.get("input", {}), indent=2,
+                                                      ensure_ascii=False), _TOOL_CAP),
+                            "result": results.get(b.get("id"))})
+            if blocks:
+                events.append({"role": "assistant", "ts": ts, "blocks": blocks})
+        elif t == "user":
+            c = (d.get("message") or {}).get("content")
+            text = None
+            if isinstance(c, str):
+                text = c
+            elif isinstance(c, list):
+                parts = [b.get("text", "") for b in c
+                         if isinstance(b, dict) and b.get("type") == "text"]
+                text = "\n".join(p for p in parts if p)
+            # skip injected system-reminder / tool-wrapper user records
+            if text and text.strip() and not text.lstrip().startswith("<"):
+                events.append({"role": "user", "ts": ts, "text": _clip(text, _TXT_CAP)})
+
+    return {"events": events, "truncated": truncated}
+
+
+# --------------------------------------------------------------------------- #
 # Memory (~/.claude/projects/<enc>/memory/*.md)
 # --------------------------------------------------------------------------- #
 _FM_RE = __import__("re").compile(r"^---\s*\n(.*?)\n---\s*\n", __import__("re").S)
@@ -581,6 +672,54 @@ INDEX_HTML = r"""<!doctype html>
           font-size: 12px; padding: 5px 9px; border-radius: 7px;
           transform: translate(-50%, -130%); opacity: 0; transition: opacity .1s; }
   .ctip.show { opacity: 1; }
+
+  /* ---- transcript modal ---- */
+  .linkbtn { padding: 4px 11px; font-size: 12px; border-radius: 7px;
+             background: var(--base); }
+  .modal { position: fixed; inset: 0; z-index: 40; display: flex;
+           align-items: center; justify-content: center; padding: 24px;
+           background: color-mix(in srgb, #000 62%, transparent); }
+  .modal-card { background: var(--bg); border: 1px solid var(--line);
+                border-radius: 14px; width: min(900px, 100%); max-height: 90vh;
+                display: flex; flex-direction: column; overflow: hidden; }
+  .modal-head { display: flex; align-items: center; gap: 14px; padding: 12px 16px 10px;
+                border-bottom: 1px solid var(--line); }
+  .modal-title { font-weight: 620; flex: 1; overflow: hidden;
+                 text-overflow: ellipsis; white-space: nowrap; }
+  .modal-sub { padding: 6px 16px; font-size: 12px; color: var(--muted);
+               border-bottom: 1px solid var(--line-soft); font-variant-numeric: tabular-nums; }
+  .think-toggle { font-size: 12px; color: var(--muted); display: flex;
+                  align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
+  .modal-x { border: none; background: none; font-size: 15px; color: var(--muted);
+             cursor: pointer; padding: 2px 6px; }
+  .modal-x:hover { color: var(--fg); }
+  .modal-body { overflow: auto; padding: 16px 18px; display: flex;
+                flex-direction: column; gap: 15px; }
+  .msg { display: flex; flex-direction: column; gap: 5px; }
+  .msg .who { font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+              color: var(--muted); }
+  .msg.user { align-items: flex-start; }
+  .bubble { border-radius: 11px; padding: 9px 13px; white-space: pre-wrap;
+            word-break: break-word; font-size: 13.5px; line-height: 1.55; }
+  .msg.user .bubble { max-width: 85%;
+            background: color-mix(in srgb, var(--bg) 74%, var(--accent));
+            border: 1px solid color-mix(in srgb, var(--bg) 55%, var(--accent)); }
+  .msg.assistant .bubble { background: color-mix(in srgb, var(--bg) 91%, var(--fg)); }
+  .think { white-space: pre-wrap; word-break: break-word; font-size: 12.5px;
+           color: var(--muted); font-style: italic; border-left: 2px solid var(--line);
+           padding: 3px 11px; }
+  .modal-body.hide-think .think { display: none; }
+  .tool { margin: 1px 0; }
+  .tool summary { cursor: pointer; font-size: 12px; color: var(--muted);
+                  font-family: ui-monospace, monospace; padding: 2px 0; }
+  .tool summary::marker { color: var(--accent); }
+  .tool pre { white-space: pre-wrap; word-break: break-word; font-size: 12px;
+              font-family: ui-monospace, monospace; margin: 6px 0 0; padding: 8px 10px;
+              border-radius: 7px; max-height: 360px; overflow: auto;
+              background: color-mix(in srgb, var(--bg) 84%, var(--fg)); }
+  .tool pre.err { border-left: 3px solid #d9534f; }
+  .tool .rlabel { font-size: 10px; color: var(--muted); margin-top: 6px;
+                  text-transform: uppercase; letter-spacing: .05em; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -639,6 +778,18 @@ INDEX_HTML = r"""<!doctype html>
 </main>
 <div class="toast" id="toast"></div>
 <div class="ctip" id="chartTip"></div>
+
+<div class="modal" id="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-head">
+      <div class="modal-title" id="mTitle"></div>
+      <label class="think-toggle"><input type="checkbox" id="thinkChk"> thinking</label>
+      <button class="modal-x" title="Close (Esc)" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-sub" id="mSub"></div>
+    <div class="modal-body hide-think" id="mBody"></div>
+  </div>
+</div>
 
 <script>
 /* ---------- shared helpers ---------- */
@@ -714,6 +865,8 @@ function scopeCell(s){
 function detailRow(s){
   const cmd=s.resume_cmd||`cd ${s.folder} && claude --resume ${s.session_id}`;
   return `<tr class="detail"><td colspan="5"><div class="detail-inner">
+    <dt>Transcript</dt><dd><button class="linkbtn"
+      onclick="event.stopPropagation();openTranscript('${s.session_id}')">View full conversation →</button></dd>
     <dt>Resume</dt><dd><span class="cmd"><code>${esc(cmd)}</code>
       <button class="copy" title="Copy resume command"
         onclick="event.stopPropagation();copyText(${JSON.stringify(cmd)})">⧉</button></span></dd>
@@ -956,8 +1109,48 @@ function attachTips(root){
 window.addEventListener("resize",()=>{ clearTimeout(_rsz);
   _rsz=setTimeout(()=>{ if(!insightsView.hidden && INS) renderInsights(); },150); });
 
-(function(){ const v=location.hash.slice(1);
-  if(["memory","insights"].includes(v)) setView(v); })();
+/* ================= TRANSCRIPT MODAL ================= */
+async function openTranscript(id){
+  mTitle.textContent="Loading…"; mSub.textContent=""; mBody.innerHTML="";
+  modal.hidden=false;
+  let j;
+  try{ j=await (await fetch("/api/transcript?id="+encodeURIComponent(id))).json(); }
+  catch(e){ closeModal(); toast("Failed to load transcript",1); return; }
+  if(j.error){ closeModal(); toast(j.error,1); return; }
+  mTitle.textContent = j.label || j.scope || id;
+  const nu=j.events.filter(e=>e.role==="user").length;
+  const na=j.events.filter(e=>e.role==="assistant").length;
+  mSub.textContent = `${base(j.folder)} · ${nu} prompts · ${na} replies`
+      + (j.truncated?" · (truncated)":"");
+  mBody.innerHTML = j.events.map(renderEvent).join("") || "<p class='axis'>Empty.</p>";
+  mBody.scrollTop=0;
+}
+function renderEvent(e){
+  if(e.role==="user")
+    return `<div class="msg user"><div class="who">You</div>`+
+           `<div class="bubble">${esc(e.text)}</div></div>`;
+  const inner=e.blocks.map(b=>{
+    if(b.t==="text") return `<div class="bubble">${esc(b.text)}</div>`;
+    if(b.t==="thinking") return `<div class="think">${esc(b.text)}</div>`;
+    if(b.t==="tool"){ const r=b.result;
+      return `<details class="tool"><summary>⚙ ${esc(b.name)}</summary>`+
+             `<pre>${esc(b.input)}</pre>`+
+             (r?`<div class="rlabel">${r.error?"error":"result"}</div>`+
+                `<pre class="${r.error?"err":""}">${esc(r.text)}</pre>`:"")+
+             `</details>`; }
+    return "";
+  }).join("");
+  return `<div class="msg assistant"><div class="who">Claude</div>${inner}</div>`;
+}
+function closeModal(){ modal.hidden=true; }
+thinkChk.addEventListener("change",()=>
+  mBody.classList.toggle("hide-think", !thinkChk.checked));
+modal.addEventListener("click",e=>{ if(e.target===modal) closeModal(); });
+window.addEventListener("keydown",e=>{ if(e.key==="Escape" && !modal.hidden) closeModal(); });
+
+(function(){ const h=location.hash.slice(1);
+  if(h.startsWith("t/")) openTranscript(h.slice(2));
+  else if(["memory","insights"].includes(h)) setView(h); })();
 load();
 </script>
 </body>
@@ -1001,6 +1194,27 @@ def make_handler(db_path, projects_dir):
                 finally:
                     conn.close()
                 return self._send(200, {"sessions": sessions, "folders": folders})
+            if u.path == "/api/transcript":
+                qs = parse_qs(u.query)
+                sid = qs.get("id", [""])[0]
+                conn = connect(db_path)
+                try:
+                    row = conn.execute("SELECT path, folder, scope FROM sessions "
+                                       "WHERE session_id = ?", (sid,)).fetchone()
+                    lbl = conn.execute("SELECT label FROM labels WHERE session_id = ?",
+                                       (sid,)).fetchone()
+                finally:
+                    conn.close()
+                if not row or not row["path"] or not os.path.isfile(row["path"]):
+                    return self._send(404, {"error": "transcript not found"})
+                try:
+                    data = load_transcript(row["path"])
+                except OSError as e:
+                    return self._send(400, {"error": str(e)})
+                data.update({"session_id": sid, "folder": row["folder"],
+                             "scope": row["scope"],
+                             "label": lbl["label"] if lbl else ""})
+                return self._send(200, data)
             if u.path == "/api/memory/projects":
                 conn = connect(db_path)
                 try:
