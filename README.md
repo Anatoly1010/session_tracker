@@ -25,6 +25,10 @@ re-indexes new or changed sessions on demand.
 - **★ Star** — the leftmost column toggles a favorite. Starred sessions also
   collect under the **Favorites** tab (same rows, resume, and transcript view).
   Stars live in a separate table, so a rescan never clears them.
+- **📝 Notes** — the details panel has a free-text note box; **Save note** stores
+  a private note for that session. A 📝 marker then appears next to its scope
+  (hover to read the note), and note text is included in the search box. Notes
+  live in their own table too, so rescans never drop them.
 - **Resume** — the details panel shows `cd <folder> && claude --resume <id>`
   with a ⧉ copy button; paste it in a terminal to continue that session.
 - **View full conversation** — opens a modal reader that reconstructs the whole

@@ -155,6 +155,12 @@ CREATE TABLE IF NOT EXISTS favorites (
     session_id   TEXT PRIMARY KEY,
     created      REAL
 );
+-- free-text notes, same story: own table so a rescan never drops them.
+CREATE TABLE IF NOT EXISTS notes (
+    session_id   TEXT PRIMARY KEY,
+    note         TEXT,
+    updated      REAL
+);
 """
 
 
@@ -237,16 +243,17 @@ def resume_command(folder, session_id):
 
 
 def query_sessions(conn, q="", folder=""):
-    sql = ("SELECT s.*, l.label AS label, "
+    sql = ("SELECT s.*, l.label AS label, n.note AS note, "
            "(fv.session_id IS NOT NULL) AS favorite "
            "FROM sessions s LEFT JOIN labels l USING (session_id) "
-           "LEFT JOIN favorites fv USING (session_id) WHERE 1=1")
+           "LEFT JOIN favorites fv USING (session_id) "
+           "LEFT JOIN notes n USING (session_id) WHERE 1=1")
     args = []
     if q:
         sql += (" AND (s.scope LIKE ? OR s.session_id LIKE ? OR s.folder LIKE ? "
-                "OR l.label LIKE ? OR s.first_user LIKE ?)")
+                "OR l.label LIKE ? OR s.first_user LIKE ? OR n.note LIKE ?)")
         like = f"%{q}%"
-        args += [like] * 5
+        args += [like] * 6
     if folder:
         sql += " AND s.folder = ?"
         args.append(folder)
@@ -281,6 +288,19 @@ def set_favorite(conn, session_id, fav):
         conn.execute("DELETE FROM favorites WHERE session_id = ?", (session_id,))
     conn.commit()
     return {"session_id": session_id, "favorite": bool(fav)}
+
+
+def set_note(conn, session_id, note):
+    """Upsert a free-text note; a blank note clears it. Own table survives rescans."""
+    note = (note or "").strip()
+    if note:
+        conn.execute("INSERT INTO notes (session_id, note, updated) VALUES (?, ?, ?) "
+                     "ON CONFLICT(session_id) DO UPDATE SET note = excluded.note, "
+                     "updated = excluded.updated", (session_id, note, time.time()))
+    else:
+        conn.execute("DELETE FROM notes WHERE session_id = ?", (session_id,))
+    conn.commit()
+    return {"session_id": session_id, "note": note}
 
 
 def folder_list(conn):
@@ -631,6 +651,13 @@ INDEX_HTML = r"""<!doctype html>
   .cmd code { white-space: pre-wrap; word-break: break-all; }
   .prompt { white-space: pre-wrap; max-height: 9em; overflow: auto; padding: 7px 9px;
             border-radius: 7px; background: color-mix(in srgb, var(--bg) 88%, var(--fg)); }
+  .notewrap { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+  .note { width: 100%; min-height: 52px; resize: vertical; font: inherit; font-size: 12px;
+          padding: 7px 9px; border-radius: 8px; color: var(--fg); box-sizing: border-box;
+          background: color-mix(in srgb, var(--bg) 90%, var(--fg));
+          border: 1px solid var(--line); }
+  .note:focus { outline: none; border-color: var(--accent); }
+  .noteflag { font-size: 11px; cursor: help; opacity: .85; }
 
   /* ---- memory cards ---- */
   .cards { display: grid; gap: 12px; margin-top: 10px;
@@ -906,7 +933,8 @@ function scopeCell(s){
   const title=s.label||s.scope;
   const main=title?esc(title):"<span style='opacity:.4'>(no scope)</span>";
   const sub=s.label&&s.scope&&s.label!==s.scope?`<div class="sub">${esc(s.scope)}</div>`:"";
-  return `<div class="row1"><span class="caret">▶</span><span class="label">${main}</span>
+  const note=s.note?`<span class="noteflag" title="${esc(s.note)}">📝</span>`:"";
+  return `<div class="row1"><span class="caret">▶</span><span class="label">${main}</span>${note}
           <button class="ren" title="Rename" onclick="rename(event,'${s.session_id}')">✎</button></div>${sub}`;
 }
 function detailRow(s){
@@ -926,6 +954,10 @@ function detailRow(s){
     <dt>Model</dt><dd>${esc(s.models)||"—"}</dd>
     ${s.first_user?`<dt>First prompt</dt><dd class="prompt">${esc(s.first_user)}</dd>`:""}
     ${s.last_prompt&&s.last_prompt!==s.first_user?`<dt>Last prompt</dt><dd class="prompt">${esc(s.last_prompt)}</dd>`:""}
+    <dt>Notes</dt><dd class="notewrap">
+      <textarea class="note" id="note-${cssId(s.session_id)}" placeholder="Add a private note…"
+        onclick="event.stopPropagation()">${esc(s.note||"")}</textarea>
+      <button class="linkbtn" onclick="event.stopPropagation();saveNote('${s.session_id}')">Save note</button></dd>
   </div></td></tr>`;
 }
 function rowHtml(s){ const o=openRows.has(s.session_id);
@@ -973,6 +1005,15 @@ async function rename(ev,id){ ev.stopPropagation();
   await fetch("/api/label",{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({session_id:id,label:val})});
   s.label=val.trim(); renderAll(); toast(s.label?"Renamed":"Label cleared");
+}
+async function saveNote(id){
+  const ta=document.getElementById("note-"+cssId(id)); if(!ta) return;
+  const val=ta.value; const s=DATA.find(x=>x.session_id===id); if(!s) return;
+  try{
+    await fetch("/api/note",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({session_id:id,note:val})});
+    s.note=val.trim(); renderAll(); toast(s.note?"Note saved":"Note cleared");
+  }catch(e){ toast("Failed to save note",1); }
 }
 q.addEventListener("input",()=>{clearTimeout(window._t);window._t=setTimeout(load,180);});
 folder.addEventListener("change",load);
@@ -1345,6 +1386,18 @@ def make_handler(db_path, projects_dir):
                     conn = connect(db_path)
                     try:
                         res = set_favorite(conn, sid, bool(body.get("favorite")))
+                    finally:
+                        conn.close()
+                return self._send(200, res)
+            if u.path == "/api/note":
+                body = self._body()
+                sid = body.get("session_id")
+                if not sid:
+                    return self._send(400, {"error": "session_id required"})
+                with write_lock:
+                    conn = connect(db_path)
+                    try:
+                        res = set_note(conn, sid, body.get("note", ""))
                     finally:
                         conn.close()
                 return self._send(200, res)
