@@ -650,6 +650,7 @@ INDEX_HTML = r"""<!doctype html>
                    padding-top: 4px; align-items: center; }
   .card .actions button, .card .actions select { padding: 4px 9px; font-size: 12px;
                    border-radius: 7px; }
+  .card .actions select { max-width: 150px; min-width: 0; }
   .memview { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px;
              margin-top: 4px; padding: 9px; border-radius: 8px;
              background: color-mix(in srgb, var(--bg) 90%, var(--fg));
@@ -915,7 +916,7 @@ function detailRow(s){
       onclick="event.stopPropagation();openTranscript('${s.session_id}')">View full conversation →</button></dd>
     <dt>Resume</dt><dd><span class="cmd"><code>${esc(cmd)}</code>
       <button class="copy" title="Copy resume command"
-        onclick="event.stopPropagation();copyText(${JSON.stringify(cmd)})">⧉</button></span></dd>
+        onclick="event.stopPropagation();copyText(${esc(JSON.stringify(cmd))})">⧉</button></span></dd>
     <dt>Session ID</dt><dd class="idchip">${s.session_id}
       <button class="copy" onclick="event.stopPropagation();copyText('${s.session_id}')">⧉</button></dd>
     <dt>Folder</dt><dd class="idchip">${esc(s.folder)}</dd>
