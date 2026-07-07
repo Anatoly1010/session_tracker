@@ -166,6 +166,8 @@ CREATE TABLE IF NOT EXISTS notes (
 CREATE TABLE IF NOT EXISTS ideas (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     text         TEXT NOT NULL,
+    details      TEXT,
+    category     TEXT,
     done         INTEGER NOT NULL DEFAULT 0,
     created      REAL
 );
@@ -187,6 +189,11 @@ def connect(db_path):
         # new columns are NULL on existing rows and scan() skips unchanged
         # files — clear the session index (never labels) so it repopulates.
         conn.execute("DELETE FROM sessions")
+    # migrate an ideas table created before details/category existed
+    have_i = {r["name"] for r in conn.execute("PRAGMA table_info(ideas)")}
+    for col in ("details", "category"):
+        if col not in have_i:
+            conn.execute(f"ALTER TABLE ideas ADD COLUMN {col} TEXT")
     conn.commit()
     return conn
 
@@ -314,33 +321,39 @@ def set_note(conn, session_id, note):
 # --------------------------------------------------------------------------- #
 # Ideas — a free-standing bullet list for future sessions
 # --------------------------------------------------------------------------- #
+_IDEA_COLS = "id, text, details, category, done, created"
+
+
 def _idea_row(r):
     return {"id": r["id"], "text": r["text"],
+            "details": r["details"] or "", "category": r["category"] or "",
             "done": bool(r["done"]), "created": r["created"]}
 
 
 def list_ideas(conn):
-    """All ideas: open ones first (oldest first), completed ones sink below."""
+    """All ideas: open ones first (oldest first), completed ones sink below.
+    (The UI re-sorts client-side; this is just a stable default order.)"""
     rows = conn.execute(
-        "SELECT id, text, done, created FROM ideas "
-        "ORDER BY done ASC, created ASC, id ASC")
+        f"SELECT {_IDEA_COLS} FROM ideas ORDER BY done ASC, created ASC, id ASC")
     return [_idea_row(r) for r in rows]
 
 
-def add_idea(conn, text):
+def add_idea(conn, text, details="", category=""):
     text = (text or "").strip()
     if not text:
         raise ValueError("empty idea")
-    cur = conn.execute("INSERT INTO ideas (text, done, created) VALUES (?, 0, ?)",
-                       (text, time.time()))
+    cur = conn.execute(
+        "INSERT INTO ideas (text, details, category, done, created) "
+        "VALUES (?, ?, ?, 0, ?)",
+        (text, (details or "").strip(), (category or "").strip(), time.time()))
     conn.commit()
-    r = conn.execute("SELECT id, text, done, created FROM ideas WHERE id = ?",
+    r = conn.execute(f"SELECT {_IDEA_COLS} FROM ideas WHERE id = ?",
                      (cur.lastrowid,)).fetchone()
     return _idea_row(r)
 
 
-def update_idea(conn, idea_id, text=None, done=None):
-    """Edit an idea's text and/or its done flag; only the given fields change."""
+def update_idea(conn, idea_id, text=None, done=None, details=None, category=None):
+    """Edit an idea; only the fields that are passed (non-None) change."""
     sets, args = [], []
     if text is not None:
         t = text.strip()
@@ -351,12 +364,18 @@ def update_idea(conn, idea_id, text=None, done=None):
     if done is not None:
         sets.append("done = ?")
         args.append(1 if done else 0)
+    if details is not None:
+        sets.append("details = ?")
+        args.append(details.strip())
+    if category is not None:
+        sets.append("category = ?")
+        args.append(category.strip())
     if not sets:
         raise ValueError("nothing to update")
     args.append(idea_id)
     conn.execute(f"UPDATE ideas SET {', '.join(sets)} WHERE id = ?", args)
     conn.commit()
-    r = conn.execute("SELECT id, text, done, created FROM ideas WHERE id = ?",
+    r = conn.execute(f"SELECT {_IDEA_COLS} FROM ideas WHERE id = ?",
                      (idea_id,)).fetchone()
     if not r:
         raise ValueError("idea not found")
@@ -728,20 +747,36 @@ INDEX_HTML = r"""<!doctype html>
   /* ---- ideas list ---- */
   .idealist { list-style: none; margin: 14px 0 0; padding: 0; max-width: 760px;
               display: flex; flex-direction: column; gap: 6px; }
-  .idea { display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px;
-          border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
-  .idea:hover { background: color-mix(in srgb, var(--bg) 92%, var(--fg)); }
+  .idea { border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+  .idea.open { border-color: color-mix(in srgb, var(--line) 45%, var(--accent)); }
+  .idea-main { display: flex; align-items: center; gap: 9px; padding: 9px 12px;
+               cursor: pointer; border-radius: 10px; }
+  .idea-main:hover { background: color-mix(in srgb, var(--bg) 92%, var(--fg)); }
+  .idea-caret { color: var(--muted); font-size: 11px; width: 12px; flex: none;
+                transition: transform .12s; }
+  .idea.open .idea-caret { transform: rotate(90deg); }
   .idea-check { border: none; background: none; padding: 0; cursor: pointer;
                 font-size: 17px; line-height: 1.3; color: var(--muted); flex: none; }
   .idea-check:hover { color: var(--accent); }
   .idea.done .idea-check { color: var(--accent); }
-  .idea-text { flex: 1; white-space: pre-wrap; word-break: break-word; cursor: text;
-               padding-top: 1px; }
+  .idea-text { flex: 1; white-space: pre-wrap; word-break: break-word; padding-top: 1px; }
   .idea.done .idea-text { text-decoration: line-through; color: var(--muted); }
+  .idea-cat { font-size: 11px; padding: 1px 9px; border-radius: 999px; flex: none;
+              background: var(--chip); color: var(--muted); white-space: nowrap;
+              max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
   .idea-act { border: none; background: none; padding: 0 4px; cursor: pointer;
               color: var(--muted); opacity: 0; font-size: 14px; flex: none; line-height: 1.3; }
-  .idea:hover .idea-act { opacity: .7; }
+  .idea-main:hover .idea-act { opacity: .7; }
   .idea-act:hover { color: var(--fg); opacity: 1; }
+  .idea-edit { display: flex; flex-direction: column; gap: 7px;
+               padding: 2px 12px 12px 33px; }
+  .idea-edit input, .idea-edit textarea { font: inherit; font-size: 13px; width: 100%;
+               color: var(--fg); box-sizing: border-box; padding: 6px 9px; border-radius: 8px;
+               border: 1px solid var(--line);
+               background: color-mix(in srgb, var(--bg) 90%, var(--fg)); }
+  .idea-edit textarea { min-height: 62px; resize: vertical; }
+  .idea-edit input:focus, .idea-edit textarea:focus { outline: none; border-color: var(--accent); }
+  .idea-editbtns { display: flex; }
 
   /* ---- memory cards ---- */
   .cards { display: grid; gap: 12px; margin-top: 10px;
@@ -889,6 +924,11 @@ INDEX_HTML = r"""<!doctype html>
     <input id="ideaInput" type="text" placeholder="Add an idea for a future session…"
            style="flex:1 1 260px;min-width:180px">
     <button id="ideaAdd">＋ Add</button>
+    <select id="ideaSort" title="Sort ideas">
+      <option value="added">Sort: Added</option>
+      <option value="category">Sort: Category</option>
+      <option value="status">Sort: Status</option>
+    </select>
     <span class="meta" id="ideaMeta"></span>
   </div>
 </header>
@@ -925,6 +965,7 @@ INDEX_HTML = r"""<!doctype html>
   </section>
 
   <section id="ideasView" hidden>
+    <datalist id="ideaCats"></datalist>
     <ul class="idealist" id="ideaList"></ul>
     <div class="empty" id="ideaEmpty" hidden>No ideas yet — jot one down above for a future session.</div>
   </section>
@@ -1217,24 +1258,52 @@ memQ.addEventListener("input",renderMem);
 
 /* ================= IDEAS ================= */
 let ideasLoaded=false, IDEAS=[];
+const openIdeas=new Set();
 
 async function loadIdeas(){
   IDEAS=(await (await fetch("/api/ideas")).json()).ideas||[];
   ideasLoaded=true; renderIdeas();
 }
+function byCreated(a,b){ return (a.created||0)-(b.created||0) || a.id-b.id; }
+function sortedIdeas(){
+  const mode=ideaSort.value, v=[...IDEAS];
+  if(mode==="category") return v.sort((a,b)=>{
+    const ca=(a.category||"").toLowerCase(), cb=(b.category||"").toLowerCase();
+    if(ca!==cb){ if(!ca) return 1; if(!cb) return -1; return ca<cb?-1:1; }
+    return (a.done-b.done)||byCreated(a,b); });
+  if(mode==="status") return v.sort((a,b)=>(a.done-b.done)||byCreated(a,b));
+  return v.sort((a,b)=>(a.done-b.done)||byCreated(a,b));  // "added"
+}
+function ideaRow(i){
+  const open=openIdeas.has(i.id);
+  const cat=i.category?`<span class="idea-cat" title="${esc(i.category)}">${esc(i.category)}</span>`:"";
+  const flag=i.details?`<span class="noteflag" title="${esc(i.details)}">📝</span>`:"";
+  const editor=open?`<div class="idea-edit" onclick="event.stopPropagation()">
+      <input id="ie-t-${i.id}" value="${esc(i.text)}" placeholder="Idea">
+      <input id="ie-c-${i.id}" value="${esc(i.category)}" list="ideaCats" placeholder="Category (optional)">
+      <textarea id="ie-d-${i.id}" placeholder="Details / notes…">${esc(i.details)}</textarea>
+      <div class="idea-editbtns"><button class="linkbtn" onclick="saveIdea(${i.id})">Save</button></div>
+    </div>`:"";
+  return `<li class="idea${i.done?" done":""}${open?" open":""}" data-id="${i.id}">
+    <div class="idea-main" onclick="toggleIdeaOpen(${i.id})">
+      <span class="caret idea-caret">▶</span>
+      <button class="idea-check" title="${i.done?"Mark as open":"Mark as done"}"
+        onclick="event.stopPropagation();toggleIdea(${i.id})">${i.done?"☑":"☐"}</button>
+      <span class="idea-text">${esc(i.text)}</span>${cat}${flag}
+      <button class="idea-act" title="Delete"
+        onclick="event.stopPropagation();deleteIdea(${i.id})">✕</button>
+    </div>${editor}</li>`;
+}
 function renderIdeas(){
   const open=IDEAS.filter(i=>!i.done).length;
-  ideaMeta.textContent = IDEAS.length
-    ? `${open} open · ${IDEAS.length} total` : "";
+  ideaMeta.textContent = IDEAS.length ? `${open} open · ${IDEAS.length} total` : "";
   ideaEmpty.hidden=IDEAS.length>0;
-  ideaList.innerHTML=IDEAS.map(i=>`
-    <li class="idea${i.done?" done":""}" data-id="${i.id}">
-      <button class="idea-check" title="${i.done?"Mark as open":"Mark as done"}"
-        onclick="toggleIdea(${i.id})">${i.done?"☑":"☐"}</button>
-      <span class="idea-text" title="Click to edit"
-        onclick="editIdea(${i.id})">${esc(i.text)}</span>
-      <button class="idea-act" title="Delete" onclick="deleteIdea(${i.id})">✕</button>
-    </li>`).join("");
+  const cats=[...new Set(IDEAS.map(i=>i.category).filter(Boolean))].sort();
+  ideaCats.innerHTML=cats.map(c=>`<option value="${esc(c)}">`).join("");
+  ideaList.innerHTML=sortedIdeas().map(ideaRow).join("");
+}
+function toggleIdeaOpen(id){
+  openIdeas.has(id)?openIdeas.delete(id):openIdeas.add(id); renderIdeas();
 }
 async function addIdea(){
   const t=ideaInput.value.trim(); if(!t) return;
@@ -1248,39 +1317,41 @@ async function addIdea(){
 }
 async function toggleIdea(id){
   const i=IDEAS.find(x=>x.id===id); if(!i) return;
-  const nv=!i.done; i.done=nv; sortIdeas(); renderIdeas();
+  const nv=!i.done; i.done=nv; renderIdeas();
   try{
     await fetch("/api/ideas/update",{method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({id,done:nv})});
-  }catch(e){ i.done=!nv; sortIdeas(); renderIdeas(); toast("Failed to update idea",1); }
+  }catch(e){ i.done=!nv; renderIdeas(); toast("Failed to update idea",1); }
 }
-async function editIdea(id){
+async function saveIdea(id){
   const i=IDEAS.find(x=>x.id===id); if(!i) return;
-  const val=prompt("Edit idea:", i.text);
-  if(val===null) return;
-  const t=val.trim(); if(!t){ deleteIdea(id); return; }
-  const old=i.text; i.text=t; renderIdeas();
+  const t=(document.getElementById("ie-t-"+id).value||"").trim();
+  const c=(document.getElementById("ie-c-"+id).value||"").trim();
+  const d=document.getElementById("ie-d-"+id).value||"";
+  if(!t){ toast("Idea can't be empty",1); return; }
+  const prev={text:i.text,category:i.category,details:i.details};
+  i.text=t; i.category=c; i.details=d.trim(); renderIdeas();
   try{
     const r=await fetch("/api/ideas/update",{method:"POST",
       headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({id,text:t})});
+      body:JSON.stringify({id,text:t,category:c,details:d})});
     const j=await r.json(); if(j.error) throw 0;
-  }catch(e){ i.text=old; renderIdeas(); toast("Failed to save idea",1); }
+    toast("Idea saved");
+  }catch(e){ Object.assign(i,prev); renderIdeas(); toast("Failed to save idea",1); }
 }
 async function deleteIdea(id){
   const idx=IDEAS.findIndex(x=>x.id===id); if(idx<0) return;
-  const [removed]=IDEAS.splice(idx,1); renderIdeas();
+  const [removed]=IDEAS.splice(idx,1); openIdeas.delete(id); renderIdeas();
   try{
     await fetch("/api/ideas/delete",{method:"POST",
       headers:{"Content-Type":"application/json"},body:JSON.stringify({id})});
     toast("Idea deleted");
   }catch(e){ IDEAS.splice(idx,0,removed); renderIdeas(); toast("Failed to delete idea",1); }
 }
-function sortIdeas(){ IDEAS.sort((a,b)=>
-  (a.done-b.done)||((a.created||0)-(b.created||0))||(a.id-b.id)); }
 ideaAdd.addEventListener("click",addIdea);
 ideaInput.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); addIdea(); } });
+ideaSort.addEventListener("change",renderIdeas);
 
 /* ================= INSIGHTS ================= */
 let INS=null, _rsz;
@@ -1578,7 +1649,9 @@ def make_handler(db_path, projects_dir):
                     with write_lock:
                         conn = connect(db_path)
                         try:
-                            res = add_idea(conn, body.get("text", ""))
+                            res = add_idea(conn, body.get("text", ""),
+                                           body.get("details", ""),
+                                           body.get("category", ""))
                         finally:
                             conn.close()
                     return self._send(200, res)
@@ -1594,7 +1667,9 @@ def make_handler(db_path, projects_dir):
                         conn = connect(db_path)
                         try:
                             res = update_idea(conn, iid,
-                                              body.get("text"), body.get("done"))
+                                              body.get("text"), body.get("done"),
+                                              body.get("details"),
+                                              body.get("category"))
                         finally:
                             conn.close()
                     return self._send(200, res)

@@ -43,10 +43,20 @@ The **💡 Ideas** tab is a standalone bullet list for things to try in future
 sessions — not tied to any particular session. Type an idea in the box and press
 **Enter** or **＋ Add**. Each idea gets a checkbox (☐/☑), and clicking one marks
 it done — completed ideas strike through and sink to the bottom while open ones
-stay on top. Click an idea's text to edit it, or the **✕** to delete it (both are
-reversible only by re-adding). The header shows an `N open · M total` count.
-Ideas live in their own `ideas` table (`/api/ideas`), so they persist across
-restarts and rescans and never interact with the session index.
+stay on top. The **✕** deletes an idea; the header shows an `N open · M total`
+count.
+
+- **Details & category** — click an idea (or its ▶ caret) to expand an inline
+  editor: rename the idea, give it a **category**, and add a free-text
+  **details / notes** field for extra context. A category chip and a 📝 marker
+  (hover to read the details) then show on the collapsed row. The category field
+  autocompletes from categories you've already used.
+- **Sort** — the *Sort* dropdown orders the list by **Added** (creation order),
+  **Category** (alphabetical, uncategorised last), or **Status** (open first).
+
+Ideas live in their own `ideas` table (`id / text / details / category / done /
+created`, served by `/api/ideas`), so they persist across restarts and rescans
+and never interact with the session index.
 
 ## Memory tab
 
