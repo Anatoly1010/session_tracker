@@ -169,7 +169,8 @@ CREATE TABLE IF NOT EXISTS ideas (
     details      TEXT,
     category     TEXT,
     done         INTEGER NOT NULL DEFAULT 0,
-    created      REAL
+    created      REAL,
+    position     REAL
 );
 """
 
@@ -189,11 +190,15 @@ def connect(db_path):
         # new columns are NULL on existing rows and scan() skips unchanged
         # files — clear the session index (never labels) so it repopulates.
         conn.execute("DELETE FROM sessions")
-    # migrate an ideas table created before details/category existed
+    # migrate an ideas table created before details/category/position existed
     have_i = {r["name"] for r in conn.execute("PRAGMA table_info(ideas)")}
     for col in ("details", "category"):
         if col not in have_i:
             conn.execute(f"ALTER TABLE ideas ADD COLUMN {col} TEXT")
+    if "position" not in have_i:
+        conn.execute("ALTER TABLE ideas ADD COLUMN position REAL")
+        # seed the manual order from creation order (id is monotonic with it)
+        conn.execute("UPDATE ideas SET position = id WHERE position IS NULL")
     conn.commit()
     return conn
 
@@ -321,20 +326,21 @@ def set_note(conn, session_id, note):
 # --------------------------------------------------------------------------- #
 # Ideas — a free-standing bullet list for future sessions
 # --------------------------------------------------------------------------- #
-_IDEA_COLS = "id, text, details, category, done, created"
+_IDEA_COLS = "id, text, details, category, done, created, position"
 
 
 def _idea_row(r):
     return {"id": r["id"], "text": r["text"],
             "details": r["details"] or "", "category": r["category"] or "",
-            "done": bool(r["done"]), "created": r["created"]}
+            "done": bool(r["done"]), "created": r["created"],
+            "position": r["position"] if r["position"] is not None else r["id"]}
 
 
 def list_ideas(conn):
-    """All ideas: open ones first (oldest first), completed ones sink below.
-    (The UI re-sorts client-side; this is just a stable default order.)"""
+    """All ideas in their manual (position) order; the UI re-sorts client-side
+    for the other sort modes, so this is just the default order."""
     rows = conn.execute(
-        f"SELECT {_IDEA_COLS} FROM ideas ORDER BY done ASC, created ASC, id ASC")
+        f"SELECT {_IDEA_COLS} FROM ideas ORDER BY position ASC, id ASC")
     return [_idea_row(r) for r in rows]
 
 
@@ -342,14 +348,27 @@ def add_idea(conn, text, details="", category=""):
     text = (text or "").strip()
     if not text:
         raise ValueError("empty idea")
+    pos = conn.execute(
+        "SELECT COALESCE(MAX(position), -1) + 1 FROM ideas").fetchone()[0]
     cur = conn.execute(
-        "INSERT INTO ideas (text, details, category, done, created) "
-        "VALUES (?, ?, ?, 0, ?)",
-        (text, (details or "").strip(), (category or "").strip(), time.time()))
+        "INSERT INTO ideas (text, details, category, done, created, position) "
+        "VALUES (?, ?, ?, 0, ?, ?)",
+        (text, (details or "").strip(), (category or "").strip(),
+         time.time(), pos))
     conn.commit()
     r = conn.execute(f"SELECT {_IDEA_COLS} FROM ideas WHERE id = ?",
                      (cur.lastrowid,)).fetchone()
     return _idea_row(r)
+
+
+def reorder_ideas(conn, order):
+    """Persist a manual ordering: `order` is the full list of idea ids, top→bottom."""
+    if not isinstance(order, list):
+        raise ValueError("order must be a list of ids")
+    for idx, iid in enumerate(order):
+        conn.execute("UPDATE ideas SET position = ? WHERE id = ?", (idx, iid))
+    conn.commit()
+    return {"ok": True, "n": len(order)}
 
 
 def update_idea(conn, idea_id, text=None, done=None, details=None, category=None):
@@ -752,6 +771,12 @@ INDEX_HTML = r"""<!doctype html>
   .idea-main { display: flex; align-items: center; gap: 9px; padding: 9px 12px;
                cursor: pointer; border-radius: 10px; }
   .idea-main:hover { background: color-mix(in srgb, var(--bg) 92%, var(--fg)); }
+  .idea-grip { flex: none; color: var(--muted); cursor: grab; font-size: 14px;
+               line-height: 1; padding: 0 1px; opacity: .55; letter-spacing: -2px; }
+  .idea-grip:hover { color: var(--fg); opacity: 1; }
+  .idea[draggable="true"] .idea-grip:active { cursor: grabbing; }
+  .idea.dragging { opacity: .5; }
+  .idea.dragging .idea-main { background: color-mix(in srgb, var(--bg) 82%, var(--accent)); }
   .idea-caret { color: var(--muted); font-size: 11px; width: 12px; flex: none;
                 transition: transform .12s; }
   .idea.open .idea-caret { transform: rotate(90deg); }
@@ -926,6 +951,7 @@ INDEX_HTML = r"""<!doctype html>
            style="flex:1 1 260px;min-width:180px">
     <button id="ideaAdd">＋ Add</button>
     <select id="ideaSort" title="Sort ideas">
+      <option value="manual">Sort: Manual (drag)</option>
       <option value="added">Sort: Added</option>
       <option value="category">Sort: Category</option>
       <option value="status">Sort: Status</option>
@@ -967,7 +993,7 @@ INDEX_HTML = r"""<!doctype html>
 
   <section id="ideasView" hidden>
     <datalist id="ideaCats"></datalist>
-    <ul class="idealist" id="ideaList"></ul>
+    <ul class="idealist" id="ideaList" ondragover="ideaListDragOver(event)"></ul>
     <div class="empty" id="ideaEmpty" hidden>No ideas yet — jot one down above for a future session.</div>
   </section>
 
@@ -1266,8 +1292,11 @@ async function loadIdeas(){
   ideasLoaded=true; renderIdeas();
 }
 function byCreated(a,b){ return (a.created||0)-(b.created||0) || a.id-b.id; }
+function ideasManual(){ return ideaSort.value==="manual"; }
 function sortedIdeas(){
   const mode=ideaSort.value, v=[...IDEAS];
+  if(mode==="manual") return v.sort((a,b)=>
+    ((a.position!=null?a.position:a.id)-(b.position!=null?b.position:b.id))||a.id-b.id);
   if(mode==="category") return v.sort((a,b)=>{
     const ca=(a.category||"").toLowerCase(), cb=(b.category||"").toLowerCase();
     if(ca!==cb){ if(!ca) return 1; if(!cb) return -1; return ca<cb?-1:1; }
@@ -1276,9 +1305,10 @@ function sortedIdeas(){
   return v.sort((a,b)=>(a.done-b.done)||byCreated(a,b));  // "added"
 }
 function ideaMainHtml(i){
+  const grip=ideasManual()?`<span class="idea-grip" title="Drag to reorder">⣿</span>`:"";
   const cat=i.category?`<span class="idea-cat" title="${esc(i.category)}">${esc(i.category)}</span>`:"";
   const flag=i.details?`<span class="noteflag" title="${esc(i.details)}">📝</span>`:"";
-  return `<span class="caret idea-caret">▶</span>
+  return `${grip}<span class="caret idea-caret">▶</span>
       <button class="idea-check" title="${i.done?"Mark as open":"Mark as done"}"
         onclick="event.stopPropagation();toggleIdea(${i.id})">${i.done?"☑":"☐"}</button>
       <span class="idea-text">${esc(i.text)}</span>${cat}${flag}
@@ -1288,13 +1318,18 @@ function ideaMainHtml(i){
 function ideaRow(i){
   const open=openIdeas.has(i.id);
   const h=`oninput="scheduleIdeaSave(${i.id})" onblur="autoSaveIdea(${i.id})"`;
+  // draggable only in manual sort, and never while its editor is open (so the
+  // textarea stays selectable and drags don't fight with editing)
+  const drag=(ideasManual() && !open)
+    ? ` draggable="true" ondragstart="ideaDragStart(event,${i.id})" ondragend="ideaDragEnd(event)"`
+    : "";
   const editor=open?`<div class="idea-edit" onclick="event.stopPropagation()">
       <input id="ie-t-${i.id}" value="${esc(i.text)}" placeholder="Idea" ${h}>
       <input id="ie-c-${i.id}" value="${esc(i.category)}" list="ideaCats" placeholder="Category (optional)" ${h}>
       <textarea id="ie-d-${i.id}" placeholder="Details / notes…" ${h}>${esc(i.details)}</textarea>
       <div class="idea-editbtns"><span class="idea-status" id="ie-s-${i.id}"></span></div>
     </div>`:"";
-  return `<li class="idea${i.done?" done":""}${open?" open":""}" data-id="${i.id}">
+  return `<li class="idea${i.done?" done":""}${open?" open":""}" data-id="${i.id}"${drag}>
     <div class="idea-main" onclick="toggleIdeaOpen(${i.id})">${ideaMainHtml(i)}</div>${editor}</li>`;
 }
 function renderIdeas(){
@@ -1368,6 +1403,37 @@ async function deleteIdea(id){
       headers:{"Content-Type":"application/json"},body:JSON.stringify({id})});
     toast("Idea deleted");
   }catch(e){ IDEAS.splice(idx,0,removed); renderIdeas(); toast("Failed to delete idea",1); }
+}
+/* ---- drag-and-drop reordering (manual sort only) ---- */
+let dragId=null;
+function ideaDragStart(e,id){ dragId=id;
+  e.dataTransfer.effectAllowed="move";
+  e.currentTarget.classList.add("dragging"); }
+function ideaAfterElement(y){
+  const els=[...ideaList.querySelectorAll(".idea:not(.dragging)")];
+  let best=null, bestOff=-Infinity;
+  for(const el of els){ const b=el.getBoundingClientRect(); const off=y-b.top-b.height/2;
+    if(off<0 && off>bestOff){ bestOff=off; best=el; } }
+  return best;
+}
+function ideaListDragOver(e){
+  if(dragId==null) return;
+  e.preventDefault(); e.dataTransfer.dropEffect="move";
+  const dragging=ideaList.querySelector(".idea.dragging"); if(!dragging) return;
+  const after=ideaAfterElement(e.clientY);
+  if(after==null) ideaList.appendChild(dragging);
+  else if(after!==dragging) ideaList.insertBefore(dragging, after);
+}
+async function ideaDragEnd(e){
+  e.currentTarget.classList.remove("dragging");
+  if(dragId==null) return; dragId=null;
+  const order=[...ideaList.querySelectorAll(".idea")].map(li=>+li.dataset.id);
+  order.forEach((id,idx)=>{ const it=IDEAS.find(x=>x.id===id); if(it) it.position=idx; });
+  try{
+    const r=await fetch("/api/ideas/reorder",{method:"POST",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify({order})});
+    const j=await r.json(); if(j.error) throw 0;
+  }catch(err){ toast("Failed to save order",1); loadIdeas(); }
 }
 ideaAdd.addEventListener("click",addIdea);
 ideaInput.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); addIdea(); } });
@@ -1707,6 +1773,18 @@ def make_handler(db_path, projects_dir):
                     finally:
                         conn.close()
                 return self._send(200, res)
+            if u.path == "/api/ideas/reorder":
+                body = self._body()
+                try:
+                    with write_lock:
+                        conn = connect(db_path)
+                        try:
+                            res = reorder_ideas(conn, body.get("order"))
+                        finally:
+                            conn.close()
+                    return self._send(200, res)
+                except ValueError as e:
+                    return self._send(400, {"error": str(e)})
             if u.path == "/api/memory/import":
                 body = self._body()
                 try:

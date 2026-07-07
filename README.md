@@ -8,8 +8,16 @@ only), read-only w.r.t. Claude's data, indexed into a local SQLite file.
 ## Run
 
 ```bash
-cd ~/q/session_tracker
+cd ~/session_tracker
 python3 session_tracker.py            # http://127.0.0.1:8765
+```
+
+On this machine there's also a shell alias (in `~/.bashrc`) so you can start it
+from anywhere — the SQLite index always lives next to the script regardless of
+where you run it:
+
+```bash
+session-tracker                       # same as: python3 ~/session_tracker/session_tracker.py
 ```
 
 Then open the URL. Search box filters label/scope/id/folder/first-prompt; the
@@ -54,8 +62,12 @@ count.
   (clearing the title is refused so an idea can't lose its name). A category chip
   and a 📝 marker (hover to read the details) then show on the collapsed row, and
   the category field autocompletes from categories you've already used.
-- **Sort** — the *Sort* dropdown orders the list by **Added** (creation order),
-  **Category** (alphabetical, uncategorised last), or **Status** (open first).
+- **Sort & reorder** — the *Sort* dropdown orders the list by **Manual**,
+  **Added** (creation order), **Category** (alphabetical, uncategorised last), or
+  **Status** (open first). In **Manual** mode (the default) each row grows a drag
+  grip (⣿) and you can **drag ideas up/down** to set your own order, which is
+  saved and restored on the next visit. Dragging is only active in Manual mode
+  and is disabled for an idea while its editor is open.
 
 Ideas live in their own `ideas` table (`id / text / details / category / done /
 created`, served by `/api/ideas`), so they persist across restarts and rescans
