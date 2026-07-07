@@ -776,7 +776,8 @@ INDEX_HTML = r"""<!doctype html>
                background: color-mix(in srgb, var(--bg) 90%, var(--fg)); }
   .idea-edit textarea { min-height: 62px; resize: vertical; }
   .idea-edit input:focus, .idea-edit textarea:focus { outline: none; border-color: var(--accent); }
-  .idea-editbtns { display: flex; }
+  .idea-editbtns { display: flex; align-items: center; min-height: 15px; }
+  .idea-status { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
   /* ---- memory cards ---- */
   .cards { display: grid; gap: 12px; margin-top: 10px;
@@ -1274,25 +1275,27 @@ function sortedIdeas(){
   if(mode==="status") return v.sort((a,b)=>(a.done-b.done)||byCreated(a,b));
   return v.sort((a,b)=>(a.done-b.done)||byCreated(a,b));  // "added"
 }
-function ideaRow(i){
-  const open=openIdeas.has(i.id);
+function ideaMainHtml(i){
   const cat=i.category?`<span class="idea-cat" title="${esc(i.category)}">${esc(i.category)}</span>`:"";
   const flag=i.details?`<span class="noteflag" title="${esc(i.details)}">📝</span>`:"";
-  const editor=open?`<div class="idea-edit" onclick="event.stopPropagation()">
-      <input id="ie-t-${i.id}" value="${esc(i.text)}" placeholder="Idea">
-      <input id="ie-c-${i.id}" value="${esc(i.category)}" list="ideaCats" placeholder="Category (optional)">
-      <textarea id="ie-d-${i.id}" placeholder="Details / notes…">${esc(i.details)}</textarea>
-      <div class="idea-editbtns"><button class="linkbtn" onclick="saveIdea(${i.id})">Save</button></div>
-    </div>`:"";
-  return `<li class="idea${i.done?" done":""}${open?" open":""}" data-id="${i.id}">
-    <div class="idea-main" onclick="toggleIdeaOpen(${i.id})">
-      <span class="caret idea-caret">▶</span>
+  return `<span class="caret idea-caret">▶</span>
       <button class="idea-check" title="${i.done?"Mark as open":"Mark as done"}"
         onclick="event.stopPropagation();toggleIdea(${i.id})">${i.done?"☑":"☐"}</button>
       <span class="idea-text">${esc(i.text)}</span>${cat}${flag}
       <button class="idea-act" title="Delete"
-        onclick="event.stopPropagation();deleteIdea(${i.id})">✕</button>
-    </div>${editor}</li>`;
+        onclick="event.stopPropagation();deleteIdea(${i.id})">✕</button>`;
+}
+function ideaRow(i){
+  const open=openIdeas.has(i.id);
+  const h=`oninput="scheduleIdeaSave(${i.id})" onblur="autoSaveIdea(${i.id})"`;
+  const editor=open?`<div class="idea-edit" onclick="event.stopPropagation()">
+      <input id="ie-t-${i.id}" value="${esc(i.text)}" placeholder="Idea" ${h}>
+      <input id="ie-c-${i.id}" value="${esc(i.category)}" list="ideaCats" placeholder="Category (optional)" ${h}>
+      <textarea id="ie-d-${i.id}" placeholder="Details / notes…" ${h}>${esc(i.details)}</textarea>
+      <div class="idea-editbtns"><span class="idea-status" id="ie-s-${i.id}"></span></div>
+    </div>`:"";
+  return `<li class="idea${i.done?" done":""}${open?" open":""}" data-id="${i.id}">
+    <div class="idea-main" onclick="toggleIdeaOpen(${i.id})">${ideaMainHtml(i)}</div>${editor}</li>`;
 }
 function renderIdeas(){
   const open=IDEAS.filter(i=>!i.done).length;
@@ -1303,7 +1306,14 @@ function renderIdeas(){
   ideaList.innerHTML=sortedIdeas().map(ideaRow).join("");
 }
 function toggleIdeaOpen(id){
-  openIdeas.has(id)?openIdeas.delete(id):openIdeas.add(id); renderIdeas();
+  if(openIdeas.has(id)){ autoSaveIdea(id); openIdeas.delete(id); }  // flush before closing
+  else openIdeas.add(id);
+  renderIdeas();
+}
+function updateIdeaHead(id){   // refresh the collapsed row (chip/flag/title) without touching the editor
+  const el=ideaList.querySelector('li[data-id="'+id+'"] .idea-main');
+  const i=IDEAS.find(x=>x.id===id);
+  if(el&&i) el.innerHTML=ideaMainHtml(i);
 }
 async function addIdea(){
   const t=ideaInput.value.trim(); if(!t) return;
@@ -1324,21 +1334,31 @@ async function toggleIdea(id){
       body:JSON.stringify({id,done:nv})});
   }catch(e){ i.done=!nv; renderIdeas(); toast("Failed to update idea",1); }
 }
-async function saveIdea(id){
+const ideaSaveTimers={};
+function ideaStatus(id,msg){ const el=document.getElementById("ie-s-"+id); if(el) el.textContent=msg; }
+function scheduleIdeaSave(id){
+  clearTimeout(ideaSaveTimers[id]);
+  ideaSaveTimers[id]=setTimeout(()=>autoSaveIdea(id),700);
+  ideaStatus(id,"editing…");
+}
+async function autoSaveIdea(id){
+  clearTimeout(ideaSaveTimers[id]);
   const i=IDEAS.find(x=>x.id===id); if(!i) return;
-  const t=(document.getElementById("ie-t-"+id).value||"").trim();
+  const te=document.getElementById("ie-t-"+id); if(!te) return;   // editor already gone
+  const t=(te.value||"").trim();
   const c=(document.getElementById("ie-c-"+id).value||"").trim();
   const d=document.getElementById("ie-d-"+id).value||"";
-  if(!t){ toast("Idea can't be empty",1); return; }
+  if(!t){ ideaStatus(id,"needs a title"); return; }
+  if(t===i.text && c===i.category && d.trim()===i.details){ ideaStatus(id,"saved"); return; }
   const prev={text:i.text,category:i.category,details:i.details};
-  i.text=t; i.category=c; i.details=d.trim(); renderIdeas();
+  i.text=t; i.category=c; i.details=d.trim(); updateIdeaHead(id);
   try{
     const r=await fetch("/api/ideas/update",{method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({id,text:t,category:c,details:d})});
     const j=await r.json(); if(j.error) throw 0;
-    toast("Idea saved");
-  }catch(e){ Object.assign(i,prev); renderIdeas(); toast("Failed to save idea",1); }
+    ideaStatus(id,"saved");
+  }catch(e){ Object.assign(i,prev); updateIdeaHead(id); ideaStatus(id,"save failed"); }
 }
 async function deleteIdea(id){
   const idx=IDEAS.findIndex(x=>x.id===id); if(idx<0) return;

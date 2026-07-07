@@ -48,9 +48,12 @@ count.
 
 - **Details & category** — click an idea (or its ▶ caret) to expand an inline
   editor: rename the idea, give it a **category**, and add a free-text
-  **details / notes** field for extra context. A category chip and a 📝 marker
-  (hover to read the details) then show on the collapsed row. The category field
-  autocompletes from categories you've already used.
+  **details / notes** field for extra context. Edits **auto-save** — there's no
+  Save button; changes are written shortly after you stop typing and when you
+  click away or collapse the idea, with a small `editing… → saved` status line
+  (clearing the title is refused so an idea can't lose its name). A category chip
+  and a 📝 marker (hover to read the details) then show on the collapsed row, and
+  the category field autocompletes from categories you've already used.
 - **Sort** — the *Sort* dropdown orders the list by **Added** (creation order),
   **Category** (alphabetical, uncategorised last), or **Status** (open first).
 
