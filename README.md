@@ -37,6 +37,17 @@ re-indexes new or changed sessions on demand.
   internal thinking hidden behind a **thinking** toggle. Close with ✕, the
   backdrop, or Esc. Deep-linkable via `#t/<session-id>`.
 
+## Ideas tab
+
+The **💡 Ideas** tab is a standalone bullet list for things to try in future
+sessions — not tied to any particular session. Type an idea in the box and press
+**Enter** or **＋ Add**. Each idea gets a checkbox (☐/☑), and clicking one marks
+it done — completed ideas strike through and sink to the bottom while open ones
+stay on top. Click an idea's text to edit it, or the **✕** to delete it (both are
+reversible only by re-adding). The header shows an `N open · M total` count.
+Ideas live in their own `ideas` table (`/api/ideas`), so they persist across
+restarts and rescans and never interact with the session index.
+
 ## Memory tab
 
 The **Memory** toggle (top of the page) switches to a browser over Claude's
@@ -66,7 +77,8 @@ A third tab with a few interactive charts computed from the session index
 - **Activity** — a weekday × hour heatmap of when sessions start (local time).
 
 Hover any mark for a tooltip. Charts re-fit on window resize. Tabs are
-deep-linkable via the URL hash (`#sessions`, `#favorites`, `#memory`, `#insights`).
+deep-linkable via the URL hash (`#sessions`, `#favorites`, `#ideas`, `#memory`,
+`#insights`).
 
 ## Theme
 

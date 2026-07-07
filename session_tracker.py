@@ -161,6 +161,14 @@ CREATE TABLE IF NOT EXISTS notes (
     note         TEXT,
     updated      REAL
 );
+-- a standalone bullet list of ideas for future sessions; not tied to any
+-- session, so it lives entirely on its own and rescans never touch it.
+CREATE TABLE IF NOT EXISTS ideas (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    text         TEXT NOT NULL,
+    done         INTEGER NOT NULL DEFAULT 0,
+    created      REAL
+);
 """
 
 
@@ -301,6 +309,64 @@ def set_note(conn, session_id, note):
         conn.execute("DELETE FROM notes WHERE session_id = ?", (session_id,))
     conn.commit()
     return {"session_id": session_id, "note": note}
+
+
+# --------------------------------------------------------------------------- #
+# Ideas — a free-standing bullet list for future sessions
+# --------------------------------------------------------------------------- #
+def _idea_row(r):
+    return {"id": r["id"], "text": r["text"],
+            "done": bool(r["done"]), "created": r["created"]}
+
+
+def list_ideas(conn):
+    """All ideas: open ones first (oldest first), completed ones sink below."""
+    rows = conn.execute(
+        "SELECT id, text, done, created FROM ideas "
+        "ORDER BY done ASC, created ASC, id ASC")
+    return [_idea_row(r) for r in rows]
+
+
+def add_idea(conn, text):
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("empty idea")
+    cur = conn.execute("INSERT INTO ideas (text, done, created) VALUES (?, 0, ?)",
+                       (text, time.time()))
+    conn.commit()
+    r = conn.execute("SELECT id, text, done, created FROM ideas WHERE id = ?",
+                     (cur.lastrowid,)).fetchone()
+    return _idea_row(r)
+
+
+def update_idea(conn, idea_id, text=None, done=None):
+    """Edit an idea's text and/or its done flag; only the given fields change."""
+    sets, args = [], []
+    if text is not None:
+        t = text.strip()
+        if not t:
+            raise ValueError("empty idea")
+        sets.append("text = ?")
+        args.append(t)
+    if done is not None:
+        sets.append("done = ?")
+        args.append(1 if done else 0)
+    if not sets:
+        raise ValueError("nothing to update")
+    args.append(idea_id)
+    conn.execute(f"UPDATE ideas SET {', '.join(sets)} WHERE id = ?", args)
+    conn.commit()
+    r = conn.execute("SELECT id, text, done, created FROM ideas WHERE id = ?",
+                     (idea_id,)).fetchone()
+    if not r:
+        raise ValueError("idea not found")
+    return _idea_row(r)
+
+
+def delete_idea(conn, idea_id):
+    conn.execute("DELETE FROM ideas WHERE id = ?", (idea_id,))
+    conn.commit()
+    return {"ok": True, "id": idea_id}
 
 
 def folder_list(conn):
@@ -659,6 +725,24 @@ INDEX_HTML = r"""<!doctype html>
   .note:focus { outline: none; border-color: var(--accent); }
   .noteflag { font-size: 11px; cursor: help; opacity: .85; }
 
+  /* ---- ideas list ---- */
+  .idealist { list-style: none; margin: 14px 0 0; padding: 0; max-width: 760px;
+              display: flex; flex-direction: column; gap: 6px; }
+  .idea { display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px;
+          border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+  .idea:hover { background: color-mix(in srgb, var(--bg) 92%, var(--fg)); }
+  .idea-check { border: none; background: none; padding: 0; cursor: pointer;
+                font-size: 17px; line-height: 1.3; color: var(--muted); flex: none; }
+  .idea-check:hover { color: var(--accent); }
+  .idea.done .idea-check { color: var(--accent); }
+  .idea-text { flex: 1; white-space: pre-wrap; word-break: break-word; cursor: text;
+               padding-top: 1px; }
+  .idea.done .idea-text { text-decoration: line-through; color: var(--muted); }
+  .idea-act { border: none; background: none; padding: 0 4px; cursor: pointer;
+              color: var(--muted); opacity: 0; font-size: 14px; flex: none; line-height: 1.3; }
+  .idea:hover .idea-act { opacity: .7; }
+  .idea-act:hover { color: var(--fg); opacity: 1; }
+
   /* ---- memory cards ---- */
   .cards { display: grid; gap: 12px; margin-top: 10px;
            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
@@ -782,6 +866,7 @@ INDEX_HTML = r"""<!doctype html>
     <div class="seg">
       <button id="tabSessions" class="on" onclick="setView('sessions')">Sessions</button>
       <button id="tabFavorites" onclick="setView('favorites')">★ Favorites</button>
+      <button id="tabIdeas" onclick="setView('ideas')">💡 Ideas</button>
       <button id="tabMemory" onclick="setView('memory')">Memory</button>
       <button id="tabInsights" onclick="setView('insights')">Insights</button>
     </div>
@@ -799,6 +884,12 @@ INDEX_HTML = r"""<!doctype html>
   </div>
   <div class="controls" id="favCtrls" hidden>
     <span class="meta" id="favMeta"></span>
+  </div>
+  <div class="controls" id="ideaCtrls" hidden>
+    <input id="ideaInput" type="text" placeholder="Add an idea for a future session…"
+           style="flex:1 1 260px;min-width:180px">
+    <button id="ideaAdd">＋ Add</button>
+    <span class="meta" id="ideaMeta"></span>
   </div>
 </header>
 
@@ -831,6 +922,11 @@ INDEX_HTML = r"""<!doctype html>
       <tbody id="favRows"></tbody>
     </table>
     <div class="empty" id="favEmpty" hidden>No favorites yet — star a session with the ☆ on its row.</div>
+  </section>
+
+  <section id="ideasView" hidden>
+    <ul class="idealist" id="ideaList"></ul>
+    <div class="empty" id="ideaEmpty" hidden>No ideas yet — jot one down above for a future session.</div>
   </section>
 
   <section id="memoryView" hidden>
@@ -897,17 +993,19 @@ async function copyText(s){ try{ await navigator.clipboard.writeText(s);
 function setView(v){
   const map={ sessions:[tabSessions,sessionsView,sessCtrls],
               favorites:[tabFavorites,favoritesView,favCtrls],
+              ideas:[tabIdeas,ideasView,ideaCtrls],
               memory:[tabMemory,memoryView,memCtrls],
               insights:[tabInsights,insightsView,null] };
   for(const k in map){ const [tab,view,ctrls]=map[k]; const on=k===v;
     tab.classList.toggle("on",on); view.hidden=!on; if(ctrls) ctrls.hidden=!on; }
   if(v==="favorites") renderFav();
+  if(v==="ideas" && !ideasLoaded) loadIdeas();
   if(v==="memory" && !memLoaded) loadMemProjects();
   if(v==="insights") loadInsights();
   if(location.hash.slice(1)!==v) history.replaceState(null,"","#"+v);
 }
 window.addEventListener("hashchange",()=>{ const v=location.hash.slice(1);
-  if(["sessions","favorites","memory","insights"].includes(v)) setView(v); });
+  if(["sessions","favorites","ideas","memory","insights"].includes(v)) setView(v); });
 
 /* ================= SESSIONS ================= */
 let DATA=[], sortK="last_ts", sortAsc=false;
@@ -1117,6 +1215,73 @@ async function undoImport(dstDir,name){
 memProj.addEventListener("change",()=>loadMem(memProj.value));
 memQ.addEventListener("input",renderMem);
 
+/* ================= IDEAS ================= */
+let ideasLoaded=false, IDEAS=[];
+
+async function loadIdeas(){
+  IDEAS=(await (await fetch("/api/ideas")).json()).ideas||[];
+  ideasLoaded=true; renderIdeas();
+}
+function renderIdeas(){
+  const open=IDEAS.filter(i=>!i.done).length;
+  ideaMeta.textContent = IDEAS.length
+    ? `${open} open · ${IDEAS.length} total` : "";
+  ideaEmpty.hidden=IDEAS.length>0;
+  ideaList.innerHTML=IDEAS.map(i=>`
+    <li class="idea${i.done?" done":""}" data-id="${i.id}">
+      <button class="idea-check" title="${i.done?"Mark as open":"Mark as done"}"
+        onclick="toggleIdea(${i.id})">${i.done?"☑":"☐"}</button>
+      <span class="idea-text" title="Click to edit"
+        onclick="editIdea(${i.id})">${esc(i.text)}</span>
+      <button class="idea-act" title="Delete" onclick="deleteIdea(${i.id})">✕</button>
+    </li>`).join("");
+}
+async function addIdea(){
+  const t=ideaInput.value.trim(); if(!t) return;
+  try{
+    const r=await fetch("/api/ideas/add",{method:"POST",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify({text:t})});
+    const j=await r.json();
+    if(j.error){ toast(j.error,1); return; }
+    IDEAS.push(j); ideaInput.value=""; renderIdeas(); ideaInput.focus();
+  }catch(e){ toast("Failed to add idea",1); }
+}
+async function toggleIdea(id){
+  const i=IDEAS.find(x=>x.id===id); if(!i) return;
+  const nv=!i.done; i.done=nv; sortIdeas(); renderIdeas();
+  try{
+    await fetch("/api/ideas/update",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({id,done:nv})});
+  }catch(e){ i.done=!nv; sortIdeas(); renderIdeas(); toast("Failed to update idea",1); }
+}
+async function editIdea(id){
+  const i=IDEAS.find(x=>x.id===id); if(!i) return;
+  const val=prompt("Edit idea:", i.text);
+  if(val===null) return;
+  const t=val.trim(); if(!t){ deleteIdea(id); return; }
+  const old=i.text; i.text=t; renderIdeas();
+  try{
+    const r=await fetch("/api/ideas/update",{method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({id,text:t})});
+    const j=await r.json(); if(j.error) throw 0;
+  }catch(e){ i.text=old; renderIdeas(); toast("Failed to save idea",1); }
+}
+async function deleteIdea(id){
+  const idx=IDEAS.findIndex(x=>x.id===id); if(idx<0) return;
+  const [removed]=IDEAS.splice(idx,1); renderIdeas();
+  try{
+    await fetch("/api/ideas/delete",{method:"POST",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify({id})});
+    toast("Idea deleted");
+  }catch(e){ IDEAS.splice(idx,0,removed); renderIdeas(); toast("Failed to delete idea",1); }
+}
+function sortIdeas(){ IDEAS.sort((a,b)=>
+  (a.done-b.done)||((a.created||0)-(b.created||0))||(a.id-b.id)); }
+ideaAdd.addEventListener("click",addIdea);
+ideaInput.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); addIdea(); } });
+
 /* ================= INSIGHTS ================= */
 let INS=null, _rsz;
 const GOLD="#d3c24e";
@@ -1258,7 +1423,7 @@ window.addEventListener("keydown",e=>{ if(e.key==="Escape" && !modal.hidden) clo
 
 (function(){ const h=location.hash.slice(1);
   if(h.startsWith("t/")) openTranscript(h.slice(2));
-  else if(["favorites","memory","insights"].includes(h)) setView(h); })();
+  else if(["favorites","ideas","memory","insights"].includes(h)) setView(h); })();
 load();
 </script>
 </body>
@@ -1323,6 +1488,12 @@ def make_handler(db_path, projects_dir):
                              "scope": row["scope"],
                              "label": lbl["label"] if lbl else ""})
                 return self._send(200, data)
+            if u.path == "/api/ideas":
+                conn = connect(db_path)
+                try:
+                    return self._send(200, {"ideas": list_ideas(conn)})
+                finally:
+                    conn.close()
             if u.path == "/api/memory/projects":
                 conn = connect(db_path)
                 try:
@@ -1398,6 +1569,46 @@ def make_handler(db_path, projects_dir):
                     conn = connect(db_path)
                     try:
                         res = set_note(conn, sid, body.get("note", ""))
+                    finally:
+                        conn.close()
+                return self._send(200, res)
+            if u.path == "/api/ideas/add":
+                body = self._body()
+                try:
+                    with write_lock:
+                        conn = connect(db_path)
+                        try:
+                            res = add_idea(conn, body.get("text", ""))
+                        finally:
+                            conn.close()
+                    return self._send(200, res)
+                except ValueError as e:
+                    return self._send(400, {"error": str(e)})
+            if u.path == "/api/ideas/update":
+                body = self._body()
+                iid = body.get("id")
+                if iid is None:
+                    return self._send(400, {"error": "id required"})
+                try:
+                    with write_lock:
+                        conn = connect(db_path)
+                        try:
+                            res = update_idea(conn, iid,
+                                              body.get("text"), body.get("done"))
+                        finally:
+                            conn.close()
+                    return self._send(200, res)
+                except ValueError as e:
+                    return self._send(400, {"error": str(e)})
+            if u.path == "/api/ideas/delete":
+                body = self._body()
+                iid = body.get("id")
+                if iid is None:
+                    return self._send(400, {"error": "id required"})
+                with write_lock:
+                    conn = connect(db_path)
+                    try:
+                        res = delete_idea(conn, iid)
                     finally:
                         conn.close()
                 return self._send(200, res)
