@@ -17,7 +17,7 @@ from anywhere — the SQLite index always lives next to the script regardless of
 where you run it:
 
 ```bash
-session-tracker                       # same as: python3 ~/session_tracker/session_tracker.py
+session                               # same as: python3 ~/session_tracker/session_tracker.py
 ```
 
 Then open the URL. Search box filters label/scope/id/folder/first-prompt; the
