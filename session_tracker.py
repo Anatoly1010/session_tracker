@@ -885,6 +885,16 @@ INDEX_HTML = r"""<!doctype html>
                  text-overflow: ellipsis; white-space: nowrap; }
   .modal-sub { padding: 6px 16px; font-size: 12px; color: var(--muted);
                border-bottom: 1px solid var(--line-soft); font-variant-numeric: tabular-nums; }
+  .modal-tools { display: flex; align-items: center; gap: 12px; padding: 8px 16px;
+                 border-bottom: 1px solid var(--line-soft); flex-wrap: wrap; }
+  .msearch { flex: 1 1 200px; min-width: 140px; padding: 5px 10px; font-size: 12.5px;
+             border-radius: 7px; border: 1px solid var(--line); background: var(--base);
+             color: var(--fg); }
+  .mcount { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums;
+            white-space: nowrap; }
+  .mfilters { display: flex; align-items: center; gap: 12px; }
+  .mfilters label { font-size: 12px; color: var(--muted); display: flex;
+                    align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
   .think-toggle { font-size: 12px; color: var(--muted); display: flex;
                   align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
   .modal-x { border: none; background: none; font-size: 15px; color: var(--muted);
@@ -902,10 +912,50 @@ INDEX_HTML = r"""<!doctype html>
             background: color-mix(in srgb, var(--bg) 74%, var(--accent));
             border: 1px solid color-mix(in srgb, var(--bg) 55%, var(--accent)); }
   .msg.assistant .bubble { background: color-mix(in srgb, var(--bg) 91%, var(--fg)); }
+  /* markdown-rendered bubbles */
+  .bubble.md { white-space: normal; }
+  .bubble.md > :first-child { margin-top: 0; }
+  .bubble.md > :last-child { margin-bottom: 0; }
+  .bubble.md p { margin: 0 0 8px; }
+  .bubble.md ul, .bubble.md ol { margin: 6px 0; padding-left: 22px; }
+  .bubble.md li { margin: 2px 0; }
+  .bubble.md code { font-family: ui-monospace, monospace; font-size: 12.5px;
+       background: color-mix(in srgb, var(--bg) 80%, var(--fg)); padding: 1px 5px;
+       border-radius: 5px; }
+  .bubble.md pre.md-code { background: color-mix(in srgb, var(--bg) 84%, var(--fg));
+       padding: 9px 11px; border-radius: 8px; overflow: auto; margin: 8px 0; }
+  .bubble.md pre.md-code code { background: none; padding: 0; font-size: 12px; }
+  .bubble.md blockquote { margin: 6px 0; padding: 2px 12px;
+       border-left: 3px solid var(--line); color: var(--muted); }
+  .bubble.md a { color: var(--accent); text-decoration: underline; }
+  .bubble.md .md-h { font-weight: 650; margin: 10px 0 4px; line-height: 1.3; }
+  .bubble.md .md-h1 { font-size: 1.25em; }
+  .bubble.md .md-h2 { font-size: 1.15em; }
+  .bubble.md .md-h3 { font-size: 1.05em; }
+  .bubble.md hr { border: none; border-top: 1px solid var(--line); margin: 10px 0; }
+  .bubble.md strong { font-weight: 680; }
+  .bubble.md em { font-style: italic; }
   .think { white-space: pre-wrap; word-break: break-word; font-size: 12.5px;
            color: var(--muted); font-style: italic; border-left: 2px solid var(--line);
            padding: 3px 11px; }
   .modal-body.hide-think .think { display: none; }
+  .modal-body.hide-user .msg.user { display: none; }
+  .modal-body.hide-assistant .msg.assistant { display: none; }
+  .msg.nomatch { display: none; }
+  mark.hl { background: var(--accent); color: #1c1c2b; border-radius: 2px; padding: 0 1px; }
+  /* collapse long messages */
+  .bubble.clamp { max-height: 300px; overflow: hidden; position: relative; }
+  .bubble.clamp::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0;
+       height: 52px; pointer-events: none; }
+  .msg.assistant .bubble.clamp::after {
+       background: linear-gradient(transparent, color-mix(in srgb, var(--bg) 91%, var(--fg))); }
+  .msg.user .bubble.clamp::after {
+       background: linear-gradient(transparent, color-mix(in srgb, var(--bg) 74%, var(--accent))); }
+  .bubble.expanded { max-height: none; }
+  .bubble.expanded::after { display: none; }
+  .more-btn { align-self: flex-start; margin-top: -2px; font-size: 11.5px;
+       color: var(--accent); background: none; border: none; cursor: pointer; padding: 2px 0; }
+  .more-btn:hover { text-decoration: underline; }
   .tool { margin: 1px 0; }
   .tool summary { cursor: pointer; font-size: 12px; color: var(--muted);
                   font-family: ui-monospace, monospace; padding: 2px 0; }
@@ -1019,10 +1069,19 @@ INDEX_HTML = r"""<!doctype html>
   <div class="modal-card">
     <div class="modal-head">
       <div class="modal-title" id="mTitle"></div>
-      <label class="think-toggle"><input type="checkbox" id="thinkChk"> thinking</label>
       <button class="modal-x" title="Close (Esc)" onclick="closeModal()">✕</button>
     </div>
     <div class="modal-sub" id="mSub"></div>
+    <div class="modal-tools">
+      <input id="mSearch" class="msearch" type="search" placeholder="Search this conversation…">
+      <span class="mcount" id="mCount"></span>
+      <span class="mfilters">
+        <label><input type="checkbox" id="fUser" checked> You</label>
+        <label><input type="checkbox" id="fAsst" checked> Claude</label>
+        <label><input type="checkbox" id="clampChk"> collapse long</label>
+        <label><input type="checkbox" id="thinkChk"> thinking</label>
+      </span>
+    </div>
     <div class="modal-body hide-think" id="mBody"></div>
   </div>
 </div>
@@ -1031,6 +1090,53 @@ INDEX_HTML = r"""<!doctype html>
 /* ---------- shared helpers ---------- */
 function esc(s){return (s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",
                        ">":"&gt;",'"':"&quot;"}[c]));}
+/* ---------- minimal markdown → HTML (input already HTML-escaped) ---------- */
+function mdInline(s){
+  const codes=[], raws=[];
+  s=s.replace(/`([^`]+)`/g,(m,c)=>{codes.push(c);return "\u0000"+(codes.length-1)+"\u0000";});
+  s=s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g,(m,t,u)=>{
+      const safe=/^(https?:|mailto:|#|\/)/i.test(u)?u:"#";
+      raws.push(`<a href="${safe}" target="_blank" rel="noopener">${t}</a>`);
+      return "\u0002"+(raws.length-1)+"\u0002";});
+  s=s.replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>");
+  s=s.replace(/__([^_]+)__/g,"<strong>$1</strong>");
+  s=s.replace(/(^|[^*\w])\*([^*\n]+)\*/g,"$1<em>$2</em>");
+  s=s.replace(/(^|[^_\w])_([^_\n]+)_/g,"$1<em>$2</em>");
+  s=s.replace(/~~([^~]+)~~/g,"<del>$1</del>");
+  s=s.replace(/\u0002(\d+)\u0002/g,(m,i)=>raws[+i]);
+  s=s.replace(/\u0000(\d+)\u0000/g,(m,i)=>`<code>${codes[+i]}</code>`);
+  return s;
+}
+function mdHtml(src){
+  src=esc(src||"");
+  const blocks=[];
+  src=src.replace(/```[^\n]*\n([\s\S]*?)```/g,(m,code)=>{
+      blocks.push(`<pre class="md-code"><code>${code.replace(/\n$/,"")}</code></pre>`);
+      return "\n\u0001"+(blocks.length-1)+"\u0001\n";});
+  const lines=src.split("\n"); const out=[]; let para=[], i=0;
+  const flush=()=>{ if(para.length){ out.push(`<p>${para.map(mdInline).join("<br>")}</p>`); para=[]; } };
+  while(i<lines.length){
+    const ln=lines[i];
+    const ph=ln.match(/^\u0001(\d+)\u0001$/);
+    if(ph){ flush(); out.push(blocks[+ph[1]]); i++; continue; }
+    if(/^\s*$/.test(ln)){ flush(); i++; continue; }
+    const h=ln.match(/^(#{1,6})\s+(.*)$/);
+    if(h){ flush(); out.push(`<div class="md-h md-h${h[1].length}">${mdInline(h[2])}</div>`); i++; continue; }
+    if(/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(ln)){ flush(); out.push("<hr>"); i++; continue; }
+    if(/^\s*&gt;\s?/.test(ln)){ flush(); const q=[];
+      while(i<lines.length && /^\s*&gt;\s?/.test(lines[i])){ q.push(lines[i].replace(/^\s*&gt;\s?/,"")); i++; }
+      out.push(`<blockquote>${q.map(mdInline).join("<br>")}</blockquote>`); continue; }
+    if(/^\s*(?:[-*+]|\d+[.)])\s+/.test(ln)){ flush();
+      const ordered=/^\s*\d+[.)]\s+/.test(ln); const items=[];
+      while(i<lines.length && /^\s*(?:[-*+]|\d+[.)])\s+/.test(lines[i])){
+        items.push(lines[i].replace(/^\s*(?:[-*+]|\d+[.)])\s+/,"")); i++; }
+      out.push(`<${ordered?"ol":"ul"}>`+items.map(t=>`<li>${mdInline(t)}</li>`).join("")+`</${ordered?"ol":"ul"}>`);
+      continue; }
+    para.push(ln); i++;
+  }
+  flush();
+  return out.join("");
+}
 function fmt(ts){ if(!ts) return "—"; const d=new Date(ts);
   return isNaN(d)?ts:d.toLocaleString([],{year:"2-digit",month:"short",day:"numeric",
                                           hour:"2-digit",minute:"2-digit"}); }
@@ -1554,13 +1660,18 @@ async function openTranscript(id){
       + (j.truncated?" · (truncated)":"");
   mBody.innerHTML = j.events.map(renderEvent).join("") || "<p class='axis'>Empty.</p>";
   mBody.scrollTop=0;
+  // reset per-transcript filters/search (clampChk state persists across transcripts)
+  mSearch.value=""; mCount.textContent="";
+  fUser.checked=true; fAsst.checked=true;
+  mBody.classList.remove("hide-user","hide-assistant");
+  applyClamp();
 }
 function renderEvent(e){
   if(e.role==="user")
     return `<div class="msg user"><div class="who">You</div>`+
-           `<div class="bubble">${esc(e.text)}</div></div>`;
+           `<div class="bubble md">${mdHtml(e.text)}</div></div>`;
   const inner=e.blocks.map(b=>{
-    if(b.t==="text") return `<div class="bubble">${esc(b.text)}</div>`;
+    if(b.t==="text") return `<div class="bubble md">${mdHtml(b.text)}</div>`;
     if(b.t==="thinking") return `<div class="think">${esc(b.text)}</div>`;
     if(b.t==="tool"){ const r=b.result;
       return `<details class="tool"><summary>⚙ ${esc(b.name)}</summary>`+
@@ -1573,6 +1684,76 @@ function renderEvent(e){
   return `<div class="msg assistant"><div class="who">Claude</div>${inner}</div>`;
 }
 function closeModal(){ modal.hidden=true; }
+/* ---- collapse long messages ---- */
+const CLAMP_PX=300;
+function setBubbleExpanded(b,ex){
+  b.classList.toggle("expanded",ex);
+  const btn=b.nextElementSibling;
+  if(btn && btn.classList.contains("more-btn"))
+    btn.textContent = ex ? "Show less ▴" : "Show more ▾";
+}
+function applyClamp(){
+  const on=clampChk.checked;
+  mBody.querySelectorAll(".bubble").forEach(b=>{
+    const nxt=b.nextElementSibling;
+    if(nxt && nxt.classList.contains("more-btn")) nxt.remove();
+    b.classList.remove("clamp","expanded");
+    if(!on) return;
+    if(b.scrollHeight > CLAMP_PX+60){        // measured un-clamped = natural height
+      b.classList.add("clamp");
+      const btn=document.createElement("button");
+      btn.type="button"; btn.className="more-btn"; btn.textContent="Show more ▾";
+      btn.addEventListener("click",()=>setBubbleExpanded(b,!b.classList.contains("expanded")));
+      b.after(btn);
+    }
+  });
+}
+/* ---- transcript search + highlight ---- */
+function clearMarks(el){
+  el.querySelectorAll("mark.hl").forEach(m=>m.replaceWith(document.createTextNode(m.textContent)));
+  el.normalize();
+}
+function markText(el,q){
+  const lc=q.toLowerCase(), n=q.length;
+  const walker=document.createTreeWalker(el,NodeFilter.SHOW_TEXT);
+  const nodes=[]; while(walker.nextNode()) nodes.push(walker.currentNode);
+  nodes.forEach(node=>{
+    const txt=node.nodeValue, low=txt.toLowerCase();
+    let idx=low.indexOf(lc); if(idx<0) return;
+    const frag=document.createDocumentFragment(); let last=0;
+    while(idx>=0){
+      if(idx>last) frag.append(txt.slice(last,idx));
+      const m=document.createElement("mark"); m.className="hl";
+      m.textContent=txt.slice(idx,idx+n); frag.append(m);
+      last=idx+n; idx=low.indexOf(lc,last);
+    }
+    if(last<txt.length) frag.append(txt.slice(last));
+    node.replaceWith(frag);
+  });
+}
+function runTransSearch(){
+  const q=(mSearch.value||"").trim(), lc=q.toLowerCase();
+  let matches=0, total=0;
+  mBody.querySelectorAll(".msg").forEach(el=>{
+    total++; clearMarks(el);
+    const clamps=el.querySelectorAll(".bubble.clamp");
+    if(!lc){ el.classList.remove("nomatch");
+      clamps.forEach(b=>setBubbleExpanded(b,false)); return; }
+    if(el.textContent.toLowerCase().includes(lc)){
+      el.classList.remove("nomatch"); markText(el,q); matches++;
+      // reveal any hit that would otherwise be hidden below a clamp fold
+      clamps.forEach(b=>setBubbleExpanded(b, b.textContent.toLowerCase().includes(lc)));
+    } else { el.classList.add("nomatch");
+      clamps.forEach(b=>setBubbleExpanded(b,false)); }
+  });
+  mCount.textContent = lc ? (matches+" of "+total+" match"+(matches===1?"":"es")) : "";
+}
+let _searchTimer;
+mSearch.addEventListener("input",()=>{ clearTimeout(_searchTimer);
+  _searchTimer=setTimeout(runTransSearch,140); });
+clampChk.addEventListener("change",()=>{ applyClamp(); runTransSearch(); });
+fUser.addEventListener("change",()=>mBody.classList.toggle("hide-user",!fUser.checked));
+fAsst.addEventListener("change",()=>mBody.classList.toggle("hide-assistant",!fAsst.checked));
 thinkChk.addEventListener("change",()=>
   mBody.classList.toggle("hide-think", !thinkChk.checked));
 modal.addEventListener("click",e=>{ if(e.target===modal) closeModal(); });

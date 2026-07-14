@@ -43,7 +43,23 @@ re-indexes new or changed sessions on demand.
   transcript: your prompts and Claude's replies as bubbles, tool calls collapsed
   into expandable `⚙` blocks (each showing its input and result), and Claude's
   internal thinking hidden behind a **thinking** toggle. Close with ✕, the
-  backdrop, or Esc. Deep-linkable via `#t/<session-id>`.
+  backdrop, or Esc. Deep-linkable via `#t/<session-id>`. The reader has a
+  toolbar:
+  - **Markdown rendering** — message bubbles render Markdown (bold, italics,
+    inline `code`, fenced code blocks, lists, headings, block quotes, links),
+    so `**emphasis**` and friends show formatted instead of raw. Rendering is
+    HTML-safe (everything is escaped first).
+  - **You / Claude filters** — checkboxes that hide either side of the
+    conversation, e.g. to skim only your own prompts or only Claude's replies.
+  - **Collapse long** — a checkbox that clamps over-long messages to a fixed
+    height with a fade and a **Show more ▾ / Show less ▴** toggle per message,
+    so a few giant messages don't bury the rest. It's off by default and
+    remembers its state as you open different transcripts; searching
+    automatically expands any collapsed message that contains a hit.
+  - **Search** — the search box filters the transcript to messages containing
+    the query (case-insensitive, matched across bubble text, tool calls, and
+    thinking), highlights every hit, and shows an `N of M matches` count. Clear
+    it to restore the full conversation.
 
 ## Ideas tab
 
